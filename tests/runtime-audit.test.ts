@@ -21,7 +21,6 @@ describe("runtime audit", () => {
       "src/agent/runtime-client.ts",
       "src/hooks/use-app-bootstrap.ts",
       "src/hooks/use-runtime-session.ts",
-      "src/hooks/use-runtime-state.ts",
       "src/hooks/use-session-data.ts",
       "src/auth/popup-flow.ts",
     ]

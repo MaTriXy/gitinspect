@@ -6,8 +6,10 @@ function createSessionRecord(id: string): SessionData {
   return {
     cost: 0,
     createdAt: "2026-03-23T12:00:00.000Z",
+    error: undefined,
     id,
-    messages: [],
+    isStreaming: false,
+    messageCount: 0,
     model: "gpt-5.1-codex-mini",
     preview: "",
     provider: "openai-codex",
