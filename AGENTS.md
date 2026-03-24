@@ -4,7 +4,7 @@ This repo is a strictly client-side browser app that recreates the core Sitegeis
 
 ## Hard no's
 
-- No server, backend, proxy, or remote persistence.
+- No server, backend, or remote persistence.
 - No extension-only or browser-coupled features: active-tab awareness, navigation messages, `browserjs`, REPL, DOM picking, native input events.
 - No skills registry, custom tools UI, or tool execution in v0.
 - No multi-device sync.
@@ -13,6 +13,8 @@ This repo is a strictly client-side browser app that recreates the core Sitegeis
 
 ## Must keep
 
+- Always use Bun to add packages, run test etc. 
+- Must implement proxy like behavior exactly like sitegeist !
 - Sessions survive reloads and browser restarts.
 - Auth supports API keys and local OAuth credentials, including refresh.
 - Model choice persists and can change mid-session.

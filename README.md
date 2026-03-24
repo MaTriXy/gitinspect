@@ -1,3 +1,3 @@
 # gitoverflow.com 
 
-Ask question to code.
+Ask questions to source code.
