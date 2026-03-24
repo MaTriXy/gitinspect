@@ -18,8 +18,11 @@ describe("runtime audit", () => {
     const files = [
       "src/agent/runtime.ts",
       "src/agent/provider-stream.ts",
+      "src/agent/runtime-client.ts",
       "src/hooks/use-app-bootstrap.ts",
-      "src/hooks/use-chat-session.ts",
+      "src/hooks/use-runtime-session.ts",
+      "src/hooks/use-runtime-state.ts",
+      "src/hooks/use-session-data.ts",
       "src/auth/popup-flow.ts",
     ]
     const content = files.map(readFile).join("\n")

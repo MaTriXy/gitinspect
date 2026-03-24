@@ -37,6 +37,7 @@ describe("loadInitialSession", () => {
       createSession: vi.fn(),
       loadMostRecentSession: vi.fn(),
       loadSession,
+      persistSessionSnapshot: vi.fn(async () => {}),
     }))
     vi.doMock("@/models/catalog", () => ({
       DEFAULT_MODELS: { "openai-codex": "gpt-5.1-codex-mini" },
@@ -71,6 +72,7 @@ describe("loadInitialSession", () => {
       createSession: vi.fn(),
       loadMostRecentSession: vi.fn().mockResolvedValue(recentSession),
       loadSession: vi.fn().mockResolvedValue(undefined),
+      persistSessionSnapshot: vi.fn(async () => {}),
     }))
     vi.doMock("@/models/catalog", () => ({
       DEFAULT_MODELS: { "openai-codex": "gpt-5.1-codex-mini" },
@@ -108,6 +110,7 @@ describe("loadInitialSession", () => {
       createSession: vi.fn(),
       loadMostRecentSession: vi.fn().mockResolvedValue(undefined),
       loadSession,
+      persistSessionSnapshot: vi.fn(async () => {}),
     }))
     vi.doMock("@/models/catalog", () => ({
       DEFAULT_MODELS: { "openai-codex": "gpt-5.1-codex-mini" },
@@ -141,6 +144,7 @@ describe("loadInitialSession", () => {
       createSession,
       loadMostRecentSession: vi.fn().mockResolvedValue(undefined),
       loadSession: vi.fn().mockResolvedValue(undefined),
+      persistSessionSnapshot: vi.fn(async () => {}),
     }))
     vi.doMock("@/models/catalog", () => ({
       DEFAULT_MODELS: { "openai-codex": "gpt-5.1-codex-mini" },
@@ -186,6 +190,7 @@ describe("loadInitialSession", () => {
       createSession,
       loadMostRecentSession: vi.fn().mockResolvedValue(undefined),
       loadSession: vi.fn().mockResolvedValue(undefined),
+      persistSessionSnapshot: vi.fn(async () => {}),
     }))
     vi.doMock("@/models/catalog", () => ({
       DEFAULT_MODELS: {
@@ -228,6 +233,7 @@ describe("loadInitialSession", () => {
       createSession,
       loadMostRecentSession: vi.fn().mockResolvedValue(undefined),
       loadSession: vi.fn().mockResolvedValue(undefined),
+      persistSessionSnapshot: vi.fn(async () => {}),
     }))
     vi.doMock("@/models/catalog", () => ({
       DEFAULT_MODELS: {

@@ -1,4 +1,5 @@
 import * as React from "react"
+import { runtimeClientStore } from "@/agent/runtime-client"
 import { getSetting, listProviderKeys, setSetting } from "@/db/schema"
 import {
   getDefaultModelForGroup,
@@ -9,7 +10,12 @@ import {
   isProviderGroupId,
 } from "@/models/catalog"
 import { getLastUsedRepoSource, setLastUsedRepoSource } from "@/repo/settings"
-import { createSession, loadMostRecentSession, loadSession } from "@/sessions/session-service"
+import {
+  createSession,
+  loadMostRecentSession,
+  loadSession,
+  persistSessionSnapshot,
+} from "@/sessions/session-service"
 import type { ProviderGroupId, ProviderId } from "@/types/models"
 import type { SessionData } from "@/types/storage"
 
@@ -62,11 +68,13 @@ export async function loadInitialSession(): Promise<SessionData> {
     return recent
   }
 
-  return createSession({
+  const created = createSession({
     model,
     providerGroup,
     repoSource: await getLastUsedRepoSource(),
   })
+  await persistSessionSnapshot(created)
+  return created
 }
 
 export function useAppBootstrap(): AppBootstrapState {
@@ -79,6 +87,7 @@ export function useAppBootstrap(): AppBootstrapState {
 
     void (async () => {
       try {
+        await runtimeClientStore.ensureConnected()
         const session = await loadInitialSession()
 
         await setSetting("active-session-id", session.id)

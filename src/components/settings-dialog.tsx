@@ -22,6 +22,7 @@ export function SettingsDialog(props: {
   onOpenChange: (open: boolean) => void
   open: boolean
   session: SessionData
+  settingsDisabled?: boolean
 }) {
   return (
     <Dialog onOpenChange={props.onOpenChange} open={props.open}>
@@ -44,6 +45,7 @@ export function SettingsDialog(props: {
           </TabsContent>
           <TabsContent value="repo">
             <RepoSettings
+              disabled={props.settingsDisabled}
               onSave={props.onRepoSourceChange}
               session={props.session}
             />

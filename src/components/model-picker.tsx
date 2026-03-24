@@ -14,6 +14,7 @@ import {
 } from "@/components/ui/select"
 
 export function ModelPicker(props: {
+  disabled?: boolean
   model: string
   onChange: (providerGroup: ProviderGroupId, model: string) => void
   providerGroup: ProviderGroupId
@@ -24,6 +25,7 @@ export function ModelPicker(props: {
   return (
     <div className="flex flex-wrap items-center gap-2">
       <Select
+        disabled={props.disabled}
         onValueChange={(value) => {
           const providerGroup = value as ProviderGroupId
           const defaultModel = getDefaultModelForGroup(providerGroup)
@@ -43,6 +45,7 @@ export function ModelPicker(props: {
         </SelectContent>
       </Select>
       <Select
+        disabled={props.disabled}
         onValueChange={(value) => props.onChange(props.providerGroup, value)}
         value={props.model}
       >

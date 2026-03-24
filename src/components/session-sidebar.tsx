@@ -7,6 +7,7 @@ export function SessionSidebar(props: {
   activeSessionId: string
   onCreateSession: () => void
   onSelectSession: (sessionId: string) => void
+  runningSessionIds: string[]
   sessions: SessionMetadata[]
 }) {
   return (
@@ -26,6 +27,7 @@ export function SessionSidebar(props: {
         <div className="flex flex-col">
           {props.sessions.map((session) => {
             const active = session.id === props.activeSessionId
+            const running = props.runningSessionIds.includes(session.id)
             const providerGroup = session.providerGroup ?? session.provider
 
             return (
@@ -35,7 +37,14 @@ export function SessionSidebar(props: {
                 onClick={() => props.onSelectSession(session.id)}
                 type="button"
               >
-                <div className="text-sm font-medium">{session.title}</div>
+                <div className="flex items-center justify-between gap-3">
+                  <div className="text-sm font-medium">{session.title}</div>
+                  {running ? (
+                    <div className="rounded-full border border-emerald-500/30 bg-emerald-500/10 px-2 py-1 text-[10px] uppercase tracking-[0.16em] text-emerald-700">
+                      Live
+                    </div>
+                  ) : null}
+                </div>
                 <div className="mt-2 line-clamp-3 text-xs leading-5 text-muted-foreground">
                   {session.preview || "No preview yet"}
                 </div>

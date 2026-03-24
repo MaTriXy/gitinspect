@@ -1,4 +1,4 @@
-import type { ChatMessage } from "@/types/chat"
+import type { AssistantMessage, ChatMessage } from "@/types/chat"
 import { formatDistanceToNow } from "date-fns"
 import { ToolCallBubble } from "@/components/tool-call-bubble"
 import { ToolResultBubble } from "@/components/tool-result-bubble"
@@ -62,17 +62,44 @@ function MessageBubble({ message }: { message: ChatMessage }) {
   return <ToolResultBubble message={message} />
 }
 
-export function ChatThread(props: { isStreaming: boolean; messages: ChatMessage[] }) {
+function mergeMessages(
+  messages: ChatMessage[],
+  draftAssistantMessage: AssistantMessage | undefined
+) {
+  if (!draftAssistantMessage) {
+    return messages
+  }
+
+  const existingIndex = messages.findIndex(
+    (message) => message.id === draftAssistantMessage.id
+  )
+
+  if (existingIndex < 0) {
+    return [...messages, draftAssistantMessage]
+  }
+
+  return messages.map((message, index) =>
+    index === existingIndex ? draftAssistantMessage : message
+  )
+}
+
+export function ChatThread(props: {
+  draftAssistantMessage?: AssistantMessage
+  isStreaming: boolean
+  messages: ChatMessage[]
+}) {
+  const mergedMessages = mergeMessages(props.messages, props.draftAssistantMessage)
+
   return (
     <ScrollArea className="h-full">
       <div className="mx-auto flex w-full max-w-4xl flex-col gap-8 px-6 py-8">
-        {props.messages.length === 0 ? (
+        {mergedMessages.length === 0 ? (
           <div className="border border-dashed border-foreground/15 bg-card/50 p-6 text-sm text-muted-foreground">
             Pick a provider, connect credentials in Settings, then send the first
             message. Sessions are stored locally and resume after reload.
           </div>
         ) : null}
-        {props.messages.map((message) => (
+        {mergedMessages.map((message) => (
           <MessageBubble key={message.id} message={message} />
         ))}
         {props.isStreaming ? (

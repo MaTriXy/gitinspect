@@ -14,6 +14,7 @@ function toDraft(repoSource: RepoSource | undefined) {
 }
 
 export function RepoSettings(props: {
+  disabled?: boolean
   onSave: (repoSource?: RepoSource) => Promise<void>
   session: SessionData
 }) {
@@ -38,6 +39,7 @@ export function RepoSettings(props: {
         <div className="space-y-2">
           <Label htmlFor="repo-owner">Owner</Label>
           <Input
+            disabled={props.disabled}
             id="repo-owner"
             onChange={(event) =>
               setDraft((current) => ({ ...current, owner: event.target.value }))
@@ -49,6 +51,7 @@ export function RepoSettings(props: {
         <div className="space-y-2">
           <Label htmlFor="repo-name">Repository</Label>
           <Input
+            disabled={props.disabled}
             id="repo-name"
             onChange={(event) =>
               setDraft((current) => ({ ...current, repo: event.target.value }))
@@ -60,6 +63,7 @@ export function RepoSettings(props: {
         <div className="space-y-2">
           <Label htmlFor="repo-ref">Ref</Label>
           <Input
+            disabled={props.disabled}
             id="repo-ref"
             onChange={(event) =>
               setDraft((current) => ({ ...current, ref: event.target.value }))
@@ -71,6 +75,7 @@ export function RepoSettings(props: {
         <div className="space-y-2">
           <Label htmlFor="repo-token">GitHub token</Label>
           <Input
+            disabled={props.disabled}
             id="repo-token"
             onChange={(event) =>
               setDraft((current) => ({ ...current, token: event.target.value }))
@@ -84,7 +89,7 @@ export function RepoSettings(props: {
 
       <div className="flex flex-wrap items-center gap-2">
         <Button
-          disabled={isSaving}
+          disabled={props.disabled || isSaving}
           onClick={async () => {
             setIsSaving(true)
             try {
@@ -98,7 +103,7 @@ export function RepoSettings(props: {
           Save repo context
         </Button>
         <Button
-          disabled={isSaving}
+          disabled={props.disabled || isSaving}
           onClick={async () => {
             setIsSaving(true)
             try {
