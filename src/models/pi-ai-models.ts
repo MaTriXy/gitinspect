@@ -11,6 +11,7 @@ const SUPPORTED_PROVIDER_ORDER = [
   "anthropic",
   "github-copilot",
   "google-gemini-cli",
+  "opencode",
   "openai-codex",
 ] as const satisfies readonly ProviderId[]
 

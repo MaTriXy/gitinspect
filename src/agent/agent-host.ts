@@ -1,6 +1,6 @@
 import { Agent, type AgentEvent } from "@mariozechner/pi-agent-core"
 import type { Message } from "@mariozechner/pi-ai"
-import { getModel } from "@/models/catalog"
+import { getCanonicalProvider, getModel } from "@/models/catalog"
 import { recordUsage } from "@/db/schema"
 import { createId } from "@/lib/ids"
 import { webMessageTransformer } from "@/agent/message-transformer"
@@ -17,7 +17,7 @@ import {
 } from "@/sessions/session-service"
 import { normalizeRepoSource } from "@/repo/settings"
 import { createRepoTools } from "@/tools"
-import type { ProviderId } from "@/types/models"
+import type { ProviderGroupId, ProviderId } from "@/types/models"
 import type { RepoSource, SessionData } from "@/types/storage"
 
 export interface AgentHostSnapshot {
@@ -48,7 +48,10 @@ export class AgentHost {
     this.agent = new Agent({
       convertToLlm: webMessageTransformer,
       getApiKey: async (provider) =>
-        await resolveApiKeyForProvider(provider as ProviderId),
+        await resolveApiKeyForProvider(
+          provider as ProviderId,
+          this.session.providerGroup
+        ),
       initialState: buildInitialAgentState(
         session,
         model,
@@ -84,12 +87,23 @@ export class AgentHost {
     this.agent.abort()
   }
 
-  async setModelSelection(provider: ProviderId, modelId: string): Promise<void> {
+  async setModelSelection(
+    providerGroup: ProviderGroupId,
+    modelId: string
+  ): Promise<void> {
+    const provider = getCanonicalProvider(providerGroup)
     const model = getModel(provider, modelId)
 
     this.agent.setModel(model)
     this.agent.sessionId = this.session.id
-    this.session = buildSessionFromAgentState(this.session, this.agent.state)
+    this.session = buildSessionFromAgentState(
+      {
+        ...this.session,
+        provider,
+        providerGroup,
+      },
+      this.agent.state
+    )
     this.emitSnapshot()
     this.queuePersist(async () => {
       await persistSession(this.session)

@@ -38,6 +38,6 @@ describe("bash tool", () => {
 
     await expect(
       tool.execute("call-3", { command: "echo hi > note.txt" })
-    ).rejects.toThrow("Command exited with code")
+    ).rejects.toThrow("Read-only filesystem")
   })
 })

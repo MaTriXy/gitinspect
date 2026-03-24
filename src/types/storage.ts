@@ -1,6 +1,11 @@
 import type { JsonValue } from "@/types/common"
 import type { ChatMessage } from "@/types/chat"
-import type { ProviderId, ThinkingLevel, Usage } from "@/types/models"
+import type {
+  ProviderGroupId,
+  ProviderId,
+  ThinkingLevel,
+  Usage,
+} from "@/types/models"
 
 export interface RepoSource {
   owner: string
@@ -17,6 +22,7 @@ export interface SessionData {
   model: string
   preview: string
   provider: ProviderId
+  providerGroup?: ProviderGroupId
   repoSource?: RepoSource
   thinkingLevel: ThinkingLevel
   title: string
@@ -34,6 +40,7 @@ export interface SessionMetadata {
   modelId: string
   preview: string
   provider: ProviderId
+  providerGroup?: ProviderGroupId
   thinkingLevel: ThinkingLevel
   title: string
   usage: Usage

@@ -2,6 +2,7 @@ import type { AgentMessage, AgentState, AgentTool } from "@mariozechner/pi-agent
 import type { Message, Model } from "@mariozechner/pi-ai"
 import { SYSTEM_PROMPT } from "@/agent/system-prompt"
 import { getIsoNow } from "@/lib/dates"
+import { getCanonicalProvider, getDefaultProviderGroup } from "@/models/catalog"
 import { buildPersistedSession } from "@/sessions/session-service"
 import type {
   AssistantMessage,
@@ -87,7 +88,17 @@ export function buildSessionFromAgentState(
     ...previousSession,
     messages: normalizeMessages(agentState.messages),
     model: agentState.model.id,
-    provider: agentState.model.provider as SessionData["provider"],
+    provider: getCanonicalProvider(
+      previousSession.providerGroup ??
+        getDefaultProviderGroup(
+          agentState.model.provider as SessionData["provider"]
+        )
+    ),
+    providerGroup:
+      previousSession.providerGroup ??
+      getDefaultProviderGroup(
+        agentState.model.provider as SessionData["provider"]
+      ),
     thinkingLevel: agentState.thinkingLevel,
     updatedAt: getIsoNow(),
   })

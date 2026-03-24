@@ -201,6 +201,7 @@ export function getCostsByProviderFromAggregates(
     anthropic: 0,
     "github-copilot": 0,
     "google-gemini-cli": 0,
+    opencode: 0,
     "openai-codex": 0,
   }
 

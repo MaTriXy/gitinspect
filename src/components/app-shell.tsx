@@ -68,7 +68,8 @@ function ReadyAppShell(props: {
           onCreateSession={async () => {
             const nextSession = createSession({
               model: chat.session.model,
-              provider: chat.session.provider,
+              providerGroup:
+                chat.session.providerGroup ?? chat.session.provider,
               repoSource: chat.session.repoSource,
               thinkingLevel: chat.session.thinkingLevel,
             })
@@ -96,13 +97,20 @@ function ReadyAppShell(props: {
             <div className="flex flex-wrap items-center gap-2">
               <ModelPicker
                 model={chat.session.model}
-                onChange={async (provider, model) => {
-                  await chat.setModelSelection(provider, model)
+                onChange={async (providerGroup, model) => {
+                  await chat.setModelSelection(providerGroup, model)
                   await setSetting("active-session-id", chat.session.id)
                 }}
-                provider={chat.session.provider}
+                providerGroup={
+                  chat.session.providerGroup ?? chat.session.provider
+                }
               />
-              <ProviderBadge provider={chat.session.provider} />
+              <ProviderBadge
+                provider={chat.session.provider}
+                providerGroup={
+                  chat.session.providerGroup ?? chat.session.provider
+                }
+              />
               <div className="rounded-full border border-foreground/10 px-3 py-1 text-[11px] uppercase tracking-[0.16em] text-muted-foreground">
                 {formatRepoSourceLabel(chat.session.repoSource)}
               </div>

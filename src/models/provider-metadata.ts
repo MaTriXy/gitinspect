@@ -22,6 +22,11 @@ export const PROVIDER_METADATA: Record<ProviderId, ProviderMetadata> = {
     description: "Cloud Code Assist OAuth for Gemini models",
     label: "Gemini",
   },
+  opencode: {
+    accentClassName: "text-teal-700",
+    description: "OpenCode API key for full and free-tier model access",
+    label: "OpenCode",
+  },
   "openai-codex": {
     accentClassName: "text-sky-700",
     description: "ChatGPT subscription OAuth and Codex-compatible responses",

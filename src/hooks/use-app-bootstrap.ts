@@ -1,14 +1,16 @@
 import * as React from "react"
 import { getSetting, listProviderKeys, setSetting } from "@/db/schema"
 import {
-  getDefaultModel,
-  getPreferredProvider,
-  getProviders,
-  hasModel,
+  getDefaultModelForGroup,
+  getDefaultProviderGroup,
+  getPreferredProviderGroup,
+  getProviderGroups,
+  hasModelForGroup,
+  isProviderGroupId,
 } from "@/models/catalog"
 import { getLastUsedRepoSource, setLastUsedRepoSource } from "@/repo/settings"
 import { createSession, loadMostRecentSession, loadSession } from "@/sessions/session-service"
-import type { ProviderId } from "@/types/models"
+import type { ProviderGroupId, ProviderId } from "@/types/models"
 import type { SessionData } from "@/types/storage"
 
 export interface AppBootstrapState {
@@ -18,21 +20,25 @@ export interface AppBootstrapState {
 }
 
 function isProviderId(value: string): value is ProviderId {
-  return getProviders().includes(value as ProviderId)
+  return getProviderGroups().includes(value as ProviderGroupId) && value !== "opencode-free"
 }
 
 export async function loadInitialSession(): Promise<SessionData> {
   const providerKeys = await listProviderKeys()
+  const storedProviderGroup = await getSetting("last-used-provider-group")
   const storedProvider = await getSetting("last-used-provider")
-  const provider =
-    typeof storedProvider === "string" && isProviderId(storedProvider)
-      ? storedProvider
-      : getPreferredProvider(providerKeys.map((record) => record.provider))
+  const providerGroup =
+    typeof storedProviderGroup === "string" &&
+    isProviderGroupId(storedProviderGroup)
+      ? storedProviderGroup
+      : typeof storedProvider === "string" && isProviderId(storedProvider)
+        ? getDefaultProviderGroup(storedProvider)
+        : getPreferredProviderGroup(providerKeys.map((record) => record.provider))
   const storedModel = await getSetting("last-used-model")
   const model =
-    typeof storedModel === "string" && hasModel(provider, storedModel)
+    typeof storedModel === "string" && hasModelForGroup(providerGroup, storedModel)
       ? storedModel
-      : getDefaultModel(provider).id
+      : getDefaultModelForGroup(providerGroup).id
   const requestedSessionId =
     typeof window === "undefined"
       ? undefined
@@ -58,7 +64,7 @@ export async function loadInitialSession(): Promise<SessionData> {
 
   return createSession({
     model,
-    provider,
+    providerGroup,
     repoSource: await getLastUsedRepoSource(),
   })
 }
@@ -78,6 +84,10 @@ export function useAppBootstrap(): AppBootstrapState {
         await setSetting("active-session-id", session.id)
         await setSetting("last-used-model", session.model)
         await setSetting("last-used-provider", session.provider)
+        await setSetting(
+          "last-used-provider-group",
+          session.providerGroup ?? session.provider
+        )
         await setLastUsedRepoSource(session.repoSource)
 
         if (!disposed) {

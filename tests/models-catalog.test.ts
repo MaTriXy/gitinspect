@@ -3,8 +3,13 @@ import { createEmptyUsage } from "@/types/models"
 import {
   DEFAULT_MODELS,
   calculateCost,
+  getCanonicalProvider,
   getDefaultModel,
+  getDefaultModelForGroup,
   getModel,
+  getModelsForGroup,
+  getProviderGroups,
+  isFreeModel,
 } from "@/models/catalog"
 
 describe("model catalog", () => {
@@ -15,6 +20,21 @@ describe("model catalog", () => {
 
   it("falls back to the provider default when the requested model is missing", () => {
     expect(getModel("github-copilot", "missing-model").id).toBe("gpt-4o")
+  })
+
+  it("exposes the OpenCode provider groups and canonicalizes the free group", () => {
+    expect(getProviderGroups()).toEqual(
+      expect.arrayContaining(["opencode", "opencode-free"])
+    )
+    expect(getCanonicalProvider("opencode-free")).toBe("opencode")
+  })
+
+  it("filters the OpenCode free group to free-tier models only", () => {
+    const freeModels = getModelsForGroup("opencode-free")
+
+    expect(freeModels.length).toBeGreaterThan(0)
+    expect(freeModels.every((model) => isFreeModel(model))).toBe(true)
+    expect(getDefaultModelForGroup("opencode-free").id).toBe("gpt-5-nano")
   })
 
   it("calculates per-message cost from usage totals", () => {

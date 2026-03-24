@@ -1,12 +1,13 @@
 import { db, getProviderKey, setProviderKey } from "@/db/schema"
 import { oauthRefresh } from "@/auth/auth-service"
+import { getPublicApiKeyForProviderGroup } from "@/auth/public-provider-fallbacks"
 import {
   isOAuthCredentials,
   parseOAuthCredentials,
   serializeOAuthCredentials,
 } from "@/auth/oauth-types"
 import { getProxyConfig } from "@/proxy/settings"
-import type { ProviderId } from "@/types/models"
+import type { ProviderGroupId, ProviderId } from "@/types/models"
 
 export interface ResolvedProviderAuth {
   apiKey: string
@@ -70,20 +71,33 @@ export async function resolveStoredApiKey(
 }
 
 export async function resolveProviderAuthForProvider(
-  provider: ProviderId
+  provider: ProviderId,
+  providerGroup?: ProviderGroupId
 ): Promise<ResolvedProviderAuth | undefined> {
   const record = await getProviderKey(provider)
 
-  if (!record?.value) {
+  if (record?.value) {
+    return await resolveStoredProviderAuth(record.value, provider)
+  }
+
+  const publicApiKey = getPublicApiKeyForProviderGroup(providerGroup)
+
+  if (!publicApiKey) {
     return undefined
   }
 
-  return await resolveStoredProviderAuth(record.value, provider)
+  return {
+    apiKey: publicApiKey,
+    isOAuth: false,
+    provider,
+    storedValue: publicApiKey,
+  }
 }
 
 export async function resolveApiKeyForProvider(
-  provider: ProviderId
+  provider: ProviderId,
+  providerGroup?: ProviderGroupId
 ): Promise<string | undefined> {
-  const resolved = await resolveProviderAuthForProvider(provider)
+  const resolved = await resolveProviderAuthForProvider(provider, providerGroup)
   return resolved?.apiKey
 }

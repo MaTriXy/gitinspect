@@ -1,8 +1,9 @@
 import * as React from "react"
 import { AgentHost, type AgentHostSnapshot } from "@/agent/agent-host"
 import { setSetting } from "@/db/schema"
+import { getCanonicalProvider } from "@/models/catalog"
 import { setLastUsedRepoSource } from "@/repo/settings"
-import type { ProviderId } from "@/types/models"
+import type { ProviderGroupId } from "@/types/models"
 import type { RepoSource, SessionData } from "@/types/storage"
 
 export function useChatSession(initialSession: SessionData) {
@@ -51,14 +52,19 @@ export function useChatSession(initialSession: SessionData) {
     await setSetting("active-session-id", nextSession.id)
     await setSetting("last-used-model", nextSession.model)
     await setSetting("last-used-provider", nextSession.provider)
+    await setSetting(
+      "last-used-provider-group",
+      nextSession.providerGroup ?? nextSession.provider
+    )
     await setLastUsedRepoSource(nextSession.repoSource)
   })
 
   const setModelSelection = React.useEffectEvent(
-    async (provider: ProviderId, model: string) => {
-      await hostRef.current?.setModelSelection(provider, model)
+    async (providerGroup: ProviderGroupId, model: string) => {
+      await hostRef.current?.setModelSelection(providerGroup, model)
       await setSetting("last-used-model", model)
-      await setSetting("last-used-provider", provider)
+      await setSetting("last-used-provider", getCanonicalProvider(providerGroup))
+      await setSetting("last-used-provider-group", providerGroup)
     }
   )
 

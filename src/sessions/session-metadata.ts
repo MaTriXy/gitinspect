@@ -50,6 +50,7 @@ export function buildSessionMetadata(session: SessionData): SessionMetadata {
     modelId: session.model,
     preview: session.preview,
     provider: session.provider,
+    providerGroup: session.providerGroup,
     thinkingLevel: session.thinkingLevel,
     title: session.title,
     usage: session.usage,

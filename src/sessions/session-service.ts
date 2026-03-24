@@ -1,20 +1,26 @@
 // Mirrors Sitegeist session persistence rules: derive metadata on save and avoid persisting empty conversations.
 import { createId } from "@/lib/ids"
 import { getIsoNow } from "@/lib/dates"
-import { createEmptyUsage, type ProviderId, type ThinkingLevel } from "@/types/models"
+import {
+  createEmptyUsage,
+  type ProviderGroupId,
+  type ThinkingLevel,
+} from "@/types/models"
 import { getMostRecentSession, getSession, saveSession } from "@/db/schema"
 import type { RepoSource, SessionData } from "@/types/storage"
 import type { Usage } from "@/types/models"
 import { buildPreview, buildSessionMetadata, generateTitle, hasPersistableExchange } from "@/sessions/session-metadata"
 import { normalizeRepoSource } from "@/repo/settings"
+import { getCanonicalProvider, getDefaultProviderGroup } from "@/models/catalog"
 
 export function createSession(params: {
   model: string
-  provider: ProviderId
+  providerGroup: ProviderGroupId
   repoSource?: RepoSource
   thinkingLevel?: ThinkingLevel
 }): SessionData {
   const now = getIsoNow()
+  const provider = getCanonicalProvider(params.providerGroup)
 
   return {
     cost: 0,
@@ -23,7 +29,8 @@ export function createSession(params: {
     messages: [],
     model: params.model,
     preview: "",
-    provider: params.provider,
+    provider,
+    providerGroup: params.providerGroup,
     repoSource: normalizeRepoSource(params.repoSource),
     thinkingLevel: params.thinkingLevel ?? "medium",
     title: "New chat",
@@ -42,11 +49,13 @@ export async function persistSession(session: SessionData): Promise<void> {
 }
 
 export async function loadSession(id: string): Promise<SessionData | undefined> {
-  return await getSession(id)
+  const session = await getSession(id)
+  return session ? normalizeSessionProviderGroup(session) : undefined
 }
 
 export async function loadMostRecentSession(): Promise<SessionData | undefined> {
-  return await getMostRecentSession()
+  const session = await getMostRecentSession()
+  return session ? normalizeSessionProviderGroup(session) : undefined
 }
 
 export function updateSessionSummaries(session: SessionData): SessionData {
@@ -90,12 +99,27 @@ export function aggregateSessionUsage(session: SessionData): Usage {
 
 export function buildPersistedSession(session: SessionData): SessionData {
   const usage = aggregateSessionUsage(session)
+  const providerGroup =
+    session.providerGroup ?? getDefaultProviderGroup(session.provider)
 
   return updateSessionSummaries({
     ...session,
     cost: usage.cost.total,
     createdAt: session.createdAt,
+    provider: getCanonicalProvider(providerGroup),
+    providerGroup,
     repoSource: normalizeRepoSource(session.repoSource),
     usage,
   })
+}
+
+export function normalizeSessionProviderGroup(session: SessionData): SessionData {
+  const providerGroup =
+    session.providerGroup ?? getDefaultProviderGroup(session.provider)
+
+  return {
+    ...session,
+    provider: getCanonicalProvider(providerGroup),
+    providerGroup,
+  }
 }

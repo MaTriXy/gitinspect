@@ -43,6 +43,7 @@ function createSession(): SessionData {
     model: "gpt-5.1-codex-mini",
     preview: "",
     provider: "openai-codex",
+    providerGroup: "openai-codex",
     thinkingLevel: "medium",
     title: "New chat",
     updatedAt: "2026-03-24T12:00:00.000Z",
@@ -145,7 +146,10 @@ describe("AgentHost", () => {
 
     await host.prompt("hello")
 
-    expect(resolveApiKeyForProvider).toHaveBeenCalledWith("openai-codex")
+    expect(resolveApiKeyForProvider).toHaveBeenCalledWith(
+      "openai-codex",
+      "openai-codex"
+    )
     expect(snapshots.at(-1)?.messages).toHaveLength(2)
     expect(snapshots.at(-1)?.messages[1]).toMatchObject({
       content: [{ text: "Hello from the mounted agent", type: "text" }],
@@ -167,6 +171,34 @@ describe("AgentHost", () => {
       "gpt-5.1-codex-mini",
       2
     )
+
+    host.dispose()
+  })
+
+  it("uses the bundled public key for OpenCode free when no local key exists", async () => {
+    resolveApiKeyForProvider.mockResolvedValue("sk-public-free-key")
+
+    const snapshots: SessionData[] = []
+    const { AgentHost } = await import("@/agent/agent-host")
+    const host = new AgentHost(
+      {
+        ...createSession(),
+        model: "gpt-5-nano",
+        provider: "opencode",
+        providerGroup: "opencode-free",
+      },
+      (snapshot) => {
+        snapshots.push(snapshot.session)
+      }
+    )
+
+    await host.prompt("hello")
+
+    expect(resolveApiKeyForProvider).toHaveBeenCalledWith(
+      "opencode",
+      "opencode-free"
+    )
+    expect(snapshots[0]?.providerGroup ?? "opencode-free").toBe("opencode-free")
 
     host.dispose()
   })

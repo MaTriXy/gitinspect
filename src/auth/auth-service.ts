@@ -25,7 +25,11 @@ import type { ProxyRequestOptions } from "@/auth/oauth-utils"
 import type { ProviderAuthKind, ProviderAuthState } from "@/types/auth"
 import type { ProviderId } from "@/types/models"
 
-export type OAuthProviderId = ProviderId
+export type OAuthProviderId =
+  | "anthropic"
+  | "github-copilot"
+  | "google-gemini-cli"
+  | "openai-codex"
 
 export const OAUTH_PROVIDERS: Record<OAuthProviderId, { label: string }> = {
   anthropic: { label: "Anthropic (Claude Pro/Max)" },

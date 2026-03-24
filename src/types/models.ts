@@ -1,10 +1,24 @@
 import type { Model, Usage as PiUsage, Api } from "@mariozechner/pi-ai"
 
-export type ProviderId =
+export type CanonicalProviderId =
   | "anthropic"
   | "github-copilot"
   | "google-gemini-cli"
   | "openai-codex"
+  | "opencode"
+
+export type ProviderId = CanonicalProviderId
+
+export type ProviderGroupId =
+  | CanonicalProviderId
+  | "opencode-free"
+
+export interface ProviderGroupDefinition {
+  canonicalProvider: CanonicalProviderId
+  description: string
+  id: ProviderGroupId
+  label: string
+}
 
 export type ApiType = Api
 export type { ThinkingLevel } from "@mariozechner/pi-agent-core"
@@ -21,7 +35,9 @@ export interface UsageCost {
   total: number
 }
 
-export type ModelDefinition = Model<ApiType>
+export type ModelDefinition = Model<ApiType> & {
+  free?: boolean
+}
 
 export function createEmptyUsage(): Usage {
   return {

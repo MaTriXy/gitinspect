@@ -11,6 +11,7 @@ function createSessionRecord(id: string): SessionData {
     model: "gpt-5.1-codex-mini",
     preview: "",
     provider: "openai-codex",
+    providerGroup: "openai-codex",
     thinkingLevel: "medium",
     title: "New chat",
     updatedAt: "2026-03-23T12:00:00.000Z",
@@ -39,12 +40,14 @@ describe("loadInitialSession", () => {
     }))
     vi.doMock("@/models/catalog", () => ({
       DEFAULT_MODELS: { "openai-codex": "gpt-5.1-codex-mini" },
-      getDefaultModel: vi.fn().mockReturnValue({
+      getDefaultModelForGroup: vi.fn().mockReturnValue({
         id: "gpt-5.1-codex-mini",
       }),
-      getPreferredProvider: vi.fn().mockReturnValue("openai-codex"),
-      getProviders: vi.fn().mockReturnValue(["openai-codex"]),
-      hasModel: vi.fn().mockReturnValue(false),
+      getDefaultProviderGroup: vi.fn((provider: string) => provider),
+      getPreferredProviderGroup: vi.fn().mockReturnValue("openai-codex"),
+      getProviderGroups: vi.fn().mockReturnValue(["openai-codex"]),
+      hasModelForGroup: vi.fn().mockReturnValue(false),
+      isProviderGroupId: vi.fn().mockReturnValue(false),
     }))
 
     window.history.replaceState({}, "", "/?session=session-url")
@@ -71,12 +74,14 @@ describe("loadInitialSession", () => {
     }))
     vi.doMock("@/models/catalog", () => ({
       DEFAULT_MODELS: { "openai-codex": "gpt-5.1-codex-mini" },
-      getDefaultModel: vi.fn().mockReturnValue({
+      getDefaultModelForGroup: vi.fn().mockReturnValue({
         id: "gpt-5.1-codex-mini",
       }),
-      getPreferredProvider: vi.fn().mockReturnValue("openai-codex"),
-      getProviders: vi.fn().mockReturnValue(["openai-codex"]),
-      hasModel: vi.fn().mockReturnValue(false),
+      getDefaultProviderGroup: vi.fn((provider: string) => provider),
+      getPreferredProviderGroup: vi.fn().mockReturnValue("openai-codex"),
+      getProviderGroups: vi.fn().mockReturnValue(["openai-codex"]),
+      hasModelForGroup: vi.fn().mockReturnValue(false),
+      isProviderGroupId: vi.fn().mockReturnValue(false),
     }))
 
     const { loadInitialSession } = await import("@/hooks/use-app-bootstrap")
@@ -94,6 +99,7 @@ describe("loadInitialSession", () => {
         .fn()
         .mockResolvedValueOnce(undefined)
         .mockResolvedValueOnce(undefined)
+        .mockResolvedValueOnce(undefined)
         .mockResolvedValueOnce("session-active"),
       listProviderKeys: vi.fn().mockResolvedValue([]),
       setSetting: vi.fn(),
@@ -105,12 +111,14 @@ describe("loadInitialSession", () => {
     }))
     vi.doMock("@/models/catalog", () => ({
       DEFAULT_MODELS: { "openai-codex": "gpt-5.1-codex-mini" },
-      getDefaultModel: vi.fn().mockReturnValue({
+      getDefaultModelForGroup: vi.fn().mockReturnValue({
         id: "gpt-5.1-codex-mini",
       }),
-      getPreferredProvider: vi.fn().mockReturnValue("openai-codex"),
-      getProviders: vi.fn().mockReturnValue(["openai-codex"]),
-      hasModel: vi.fn().mockReturnValue(false),
+      getDefaultProviderGroup: vi.fn((provider: string) => provider),
+      getPreferredProviderGroup: vi.fn().mockReturnValue("openai-codex"),
+      getProviderGroups: vi.fn().mockReturnValue(["openai-codex"]),
+      hasModelForGroup: vi.fn().mockReturnValue(false),
+      isProviderGroupId: vi.fn().mockReturnValue(false),
     }))
 
     const { loadInitialSession } = await import("@/hooks/use-app-bootstrap")
@@ -136,12 +144,14 @@ describe("loadInitialSession", () => {
     }))
     vi.doMock("@/models/catalog", () => ({
       DEFAULT_MODELS: { "openai-codex": "gpt-5.1-codex-mini" },
-      getDefaultModel: vi.fn().mockReturnValue({
+      getDefaultModelForGroup: vi.fn().mockReturnValue({
         id: "gpt-5.1-codex-mini",
       }),
-      getPreferredProvider: vi.fn().mockReturnValue("openai-codex"),
-      getProviders: vi.fn().mockReturnValue(["openai-codex"]),
-      hasModel: vi.fn().mockReturnValue(false),
+      getDefaultProviderGroup: vi.fn((provider: string) => provider),
+      getPreferredProviderGroup: vi.fn().mockReturnValue("openai-codex"),
+      getProviderGroups: vi.fn().mockReturnValue(["openai-codex"]),
+      hasModelForGroup: vi.fn().mockReturnValue(false),
+      isProviderGroupId: vi.fn().mockReturnValue(false),
     }))
 
     const { loadInitialSession } = await import("@/hooks/use-app-bootstrap")
@@ -149,7 +159,7 @@ describe("loadInitialSession", () => {
 
     expect(createSession).toHaveBeenCalledWith({
       model: "gpt-5.1-codex-mini",
-      provider: "openai-codex",
+      providerGroup: "openai-codex",
     })
     expect(session.id).toBe("session-new")
   })
@@ -182,12 +192,14 @@ describe("loadInitialSession", () => {
         anthropic: "claude-sonnet-4-6",
         "openai-codex": "gpt-5.1-codex-mini",
       },
-      getDefaultModel: vi.fn().mockReturnValue({
+      getDefaultModelForGroup: vi.fn().mockReturnValue({
         id: "claude-sonnet-4-6",
       }),
-      getPreferredProvider: vi.fn().mockReturnValue("anthropic"),
-      getProviders: vi.fn().mockReturnValue(["openai-codex", "anthropic"]),
-      hasModel: vi.fn().mockReturnValue(false),
+      getDefaultProviderGroup: vi.fn((provider: string) => provider),
+      getPreferredProviderGroup: vi.fn().mockReturnValue("anthropic"),
+      getProviderGroups: vi.fn().mockReturnValue(["openai-codex", "anthropic"]),
+      hasModelForGroup: vi.fn().mockReturnValue(false),
+      isProviderGroupId: vi.fn().mockReturnValue(false),
     }))
 
     const { loadInitialSession } = await import("@/hooks/use-app-bootstrap")
@@ -195,7 +207,7 @@ describe("loadInitialSession", () => {
 
     expect(createSession).toHaveBeenCalledWith({
       model: "claude-sonnet-4-6",
-      provider: "anthropic",
+      providerGroup: "anthropic",
     })
   })
 
@@ -205,6 +217,7 @@ describe("loadInitialSession", () => {
     vi.doMock("@/db/schema", () => ({
       getSetting: vi
         .fn()
+        .mockResolvedValueOnce(undefined)
         .mockResolvedValueOnce("openai-codex")
         .mockResolvedValueOnce("gpt-5.2-codex")
         .mockResolvedValueOnce(undefined),
@@ -220,12 +233,14 @@ describe("loadInitialSession", () => {
       DEFAULT_MODELS: {
         "openai-codex": "gpt-5.1-codex-mini",
       },
-      getDefaultModel: vi.fn().mockReturnValue({
+      getDefaultModelForGroup: vi.fn().mockReturnValue({
         id: "gpt-5.1-codex-mini",
       }),
-      getPreferredProvider: vi.fn().mockReturnValue("openai-codex"),
-      getProviders: vi.fn().mockReturnValue(["openai-codex"]),
-      hasModel: vi.fn().mockReturnValue(true),
+      getDefaultProviderGroup: vi.fn((provider: string) => provider),
+      getPreferredProviderGroup: vi.fn().mockReturnValue("openai-codex"),
+      getProviderGroups: vi.fn().mockReturnValue(["openai-codex"]),
+      hasModelForGroup: vi.fn().mockReturnValue(true),
+      isProviderGroupId: vi.fn().mockReturnValue(false),
     }))
 
     const { loadInitialSession } = await import("@/hooks/use-app-bootstrap")
@@ -233,7 +248,7 @@ describe("loadInitialSession", () => {
 
     expect(createSession).toHaveBeenCalledWith({
       model: "gpt-5.2-codex",
-      provider: "openai-codex",
+      providerGroup: "openai-codex",
     })
   })
 })

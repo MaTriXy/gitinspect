@@ -1,4 +1,5 @@
 import type { SessionMetadata } from "@/types/storage"
+import { getProviderGroupMetadata } from "@/models/catalog"
 import { Button } from "@/components/ui/button"
 import { ScrollArea } from "@/components/ui/scroll-area"
 
@@ -25,6 +26,7 @@ export function SessionSidebar(props: {
         <div className="flex flex-col">
           {props.sessions.map((session) => {
             const active = session.id === props.activeSessionId
+            const providerGroup = session.providerGroup ?? session.provider
 
             return (
               <button
@@ -38,7 +40,7 @@ export function SessionSidebar(props: {
                   {session.preview || "No preview yet"}
                 </div>
                 <div className="mt-3 text-[11px] uppercase tracking-[0.16em] text-muted-foreground">
-                  {session.provider} · {session.model}
+                  {getProviderGroupMetadata(providerGroup).label} · {session.model}
                 </div>
               </button>
             )

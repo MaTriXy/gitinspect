@@ -2,40 +2,57 @@ import { act, render } from "@testing-library/react"
 import { beforeEach, describe, expect, it, vi } from "vitest"
 import { createEmptyUsage } from "@/types/models"
 import type { SessionData } from "@/types/storage"
-import { useChatSession } from "@/hooks/use-chat-session"
 
-const setSetting = vi.fn()
-const hostInstances: FakeAgentHost[] = []
+const { hostInstances, setLastUsedRepoSource, setSetting } = vi.hoisted(() => ({
+  hostInstances: [] as Array<{
+    abort: ReturnType<typeof vi.fn>
+    dispose: ReturnType<typeof vi.fn>
+    emit: (snapshot: {
+      error?: string
+      isStreaming: boolean
+      session: SessionData
+    }) => void
+    prompt: ReturnType<typeof vi.fn>
+    session: SessionData
+    setModelSelection: ReturnType<typeof vi.fn>
+  }>,
+  setLastUsedRepoSource: vi.fn(),
+  setSetting: vi.fn(),
+}))
 
 vi.mock("@/db/schema", () => ({
   setSetting,
 }))
 
-class FakeAgentHost {
-  constructor(
-    readonly session: SessionData,
-    readonly onSnapshot: (snapshot: {
-      error?: string
-      isStreaming: boolean
-      session: SessionData
-    }) => void
-  ) {
-    hostInstances.push(this)
-  }
-
-  abort = vi.fn()
-  dispose = vi.fn()
-  prompt = vi.fn(async (_content: string) => {})
-  setModelSelection = vi.fn(async (_provider: string, _model: string) => {})
-
-  emit(snapshot: { error?: string; isStreaming: boolean; session: SessionData }) {
-    this.onSnapshot(snapshot)
-  }
-}
+vi.mock("@/repo/settings", () => ({
+  setLastUsedRepoSource,
+}))
 
 vi.mock("@/agent/agent-host", () => ({
-  AgentHost: FakeAgentHost,
+  AgentHost: class FakeAgentHost {
+    readonly abort = vi.fn()
+    readonly dispose = vi.fn()
+    readonly prompt = vi.fn(async (_content: string) => {})
+    readonly setModelSelection = vi.fn(async (_provider: string, _model: string) => {})
+
+    constructor(
+      readonly session: SessionData,
+      readonly onSnapshot: (snapshot: {
+        error?: string
+        isStreaming: boolean
+        session: SessionData
+      }) => void
+    ) {
+      hostInstances.push(this)
+    }
+
+    emit(snapshot: { error?: string; isStreaming: boolean; session: SessionData }) {
+      this.onSnapshot(snapshot)
+    }
+  },
 }))
+
+import { useChatSession } from "@/hooks/use-chat-session"
 
 function createSession(id: string): SessionData {
   return {
@@ -46,6 +63,7 @@ function createSession(id: string): SessionData {
     model: "gpt-5.1-codex-mini",
     preview: "",
     provider: "openai-codex",
+    providerGroup: "openai-codex",
     thinkingLevel: "medium",
     title: "New chat",
     updatedAt: "2026-03-24T12:00:00.000Z",
@@ -69,6 +87,7 @@ describe("useChatSession", () => {
   beforeEach(() => {
     hostInstances.length = 0
     setSetting.mockReset()
+    setLastUsedRepoSource.mockReset()
   })
 
   it("mounts a host, forwards actions, and disposes on session switch", async () => {
@@ -112,6 +131,10 @@ describe("useChatSession", () => {
     )
     expect(setSetting).toHaveBeenCalledWith("last-used-model", "claude-sonnet-4-6")
     expect(setSetting).toHaveBeenCalledWith("last-used-provider", "anthropic")
+    expect(setSetting).toHaveBeenCalledWith(
+      "last-used-provider-group",
+      "anthropic"
+    )
     expect(setSetting).toHaveBeenCalledWith("active-session-id", "session-2")
   })
 })

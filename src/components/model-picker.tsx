@@ -1,6 +1,10 @@
-import type { ProviderId } from "@/types/models"
-import { getModels, getProviders } from "@/models/catalog"
-import { PROVIDER_METADATA } from "@/models/provider-metadata"
+import type { ProviderGroupId } from "@/types/models"
+import {
+  getDefaultModelForGroup,
+  getModelsForGroup,
+  getProviderGroupMetadata,
+  getProviderGroups,
+} from "@/models/catalog"
 import {
   Select,
   SelectContent,
@@ -11,35 +15,35 @@ import {
 
 export function ModelPicker(props: {
   model: string
-  onChange: (provider: ProviderId, model: string) => void
-  provider: ProviderId
+  onChange: (providerGroup: ProviderGroupId, model: string) => void
+  providerGroup: ProviderGroupId
 }) {
-  const providers = getProviders()
-  const models = getModels(props.provider)
+  const providerGroups = getProviderGroups()
+  const models = getModelsForGroup(props.providerGroup)
 
   return (
     <div className="flex flex-wrap items-center gap-2">
       <Select
         onValueChange={(value) => {
-          const provider = value as ProviderId
-          const defaultModel = getModels(provider)[0]
-          props.onChange(provider, defaultModel.id)
+          const providerGroup = value as ProviderGroupId
+          const defaultModel = getDefaultModelForGroup(providerGroup)
+          props.onChange(providerGroup, defaultModel.id)
         }}
-        value={props.provider}
+        value={props.providerGroup}
       >
         <SelectTrigger className="min-w-40">
           <SelectValue />
         </SelectTrigger>
         <SelectContent>
-          {providers.map((provider) => (
-            <SelectItem key={provider} value={provider}>
-              {PROVIDER_METADATA[provider].label}
+          {providerGroups.map((providerGroup) => (
+            <SelectItem key={providerGroup} value={providerGroup}>
+              {getProviderGroupMetadata(providerGroup).label}
             </SelectItem>
           ))}
         </SelectContent>
       </Select>
       <Select
-        onValueChange={(value) => props.onChange(props.provider, value)}
+        onValueChange={(value) => props.onChange(props.providerGroup, value)}
         value={props.model}
       >
         <SelectTrigger className="min-w-52">
