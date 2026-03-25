@@ -173,20 +173,28 @@ export type ModelSelectorLogoProps = Omit<
     | (string & {});
 };
 
+function resolveLogoProvider(provider: string): string {
+  return provider === "openai-codex" ? "openai" : provider
+}
+
 export const ModelSelectorLogo = ({
   provider,
   className,
   ...props
-}: ModelSelectorLogoProps) => (
-  <img
-    {...props}
-    alt={`${provider} logo`}
-    className={cn("size-3 dark:invert", className)}
-    height={12}
-    src={`https://models.dev/logos/${provider}.svg`}
-    width={12}
-  />
-);
+}: ModelSelectorLogoProps) => {
+  const logoProvider = resolveLogoProvider(provider)
+
+  return (
+    <img
+      {...props}
+      alt={`${logoProvider} logo`}
+      className={cn("size-3 dark:invert", className)}
+      height={12}
+      src={`https://models.dev/logos/${logoProvider}.svg`}
+      width={12}
+    />
+  )
+};
 
 export type ModelSelectorLogoGroupProps = ComponentProps<"div">;
 

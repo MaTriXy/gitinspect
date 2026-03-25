@@ -20,7 +20,7 @@ import {
   SourcesContent,
   SourcesTrigger,
 } from "@/components/ai-elements/sources"
-import { ToolCallBubble } from "@/components/tool-call-bubble"
+import { ToolExecution } from "@/components/tool-execution"
 import { ToolResultBubble } from "@/components/tool-result-bubble"
 import type { ChatMessage as ChatMessageType } from "@/types/chat"
 import {
@@ -30,6 +30,7 @@ import {
 } from "./chat-adapter"
 
 export function ChatMessage(props: {
+  followingMessages?: readonly ChatMessageType[]
   isStreamingReasoning: boolean
   message: ChatMessageType
 }) {
@@ -49,7 +50,7 @@ export function ChatMessage(props: {
     return <ToolResultBubble message={message} />
   }
 
-  const view = deriveAssistantView(message)
+  const view = deriveAssistantView(message, props.followingMessages)
 
   return (
     <Message from="assistant">
@@ -74,23 +75,29 @@ export function ChatMessage(props: {
           </Reasoning>
         ) : null}
 
-        <MessageBranch>
-          <MessageBranchContent>
-            {view.versions.map((versionText, index) => (
-              <MessageContent key={`${message.id}-v${String(index)}`}>
-                <MessageResponse>{versionText}</MessageResponse>
-              </MessageContent>
-            ))}
-          </MessageBranchContent>
-          <MessageBranchSelector>
-            <MessageBranchPrevious />
-            <MessageBranchPage />
-            <MessageBranchNext />
-          </MessageBranchSelector>
-        </MessageBranch>
+        {view.text ? (
+          <MessageBranch>
+            <MessageBranchContent>
+              {view.versions.map((versionText, index) => (
+                <MessageContent key={`${message.id}-v${String(index)}`}>
+                  <MessageResponse>{versionText}</MessageResponse>
+                </MessageContent>
+              ))}
+            </MessageBranchContent>
+            <MessageBranchSelector>
+              <MessageBranchPrevious />
+              <MessageBranchPage />
+              <MessageBranchNext />
+            </MessageBranchSelector>
+          </MessageBranch>
+        ) : null}
 
-        {view.toolCalls.map((toolCall) => (
-          <ToolCallBubble key={toolCall.id} toolCall={toolCall} />
+        {view.toolExecutions.map(({ toolCall, toolResult }) => (
+          <ToolExecution
+            key={toolCall.id}
+            toolCall={toolCall}
+            toolResult={toolResult}
+          />
         ))}
       </div>
     </Message>

@@ -1,12 +1,22 @@
 import * as React from "react"
+import { ChatModelSelector } from "./chat-model-selector"
 import type { ChatStatus } from "ai"
+import type { PromptInputMessage } from "@/components/ai-elements/prompt-input"
+import type { ProviderGroupId, ThinkingLevel } from "@/types/models"
+import { getModelForGroup } from "@/models/catalog"
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select"
 import {
   Attachment,
   AttachmentPreview,
   AttachmentRemove,
   Attachments,
 } from "@/components/ai-elements/attachments"
-import type { PromptInputMessage } from "@/components/ai-elements/prompt-input"
 import {
   PromptInput,
   PromptInputActionAddAttachments,
@@ -15,7 +25,6 @@ import {
   PromptInputActionMenuContent,
   PromptInputActionMenuTrigger,
   PromptInputBody,
-  PromptInputButton,
   PromptInputFooter,
   PromptInputHeader,
   PromptInputProvider,
@@ -25,28 +34,14 @@ import {
   usePromptInputAttachments,
   usePromptInputController,
 } from "@/components/ai-elements/prompt-input"
-import { SpeechInput } from "@/components/ai-elements/speech-input"
-import type { ProviderGroupId } from "@/types/models"
-import { GlobeIcon } from "lucide-react"
-import { ChatModelSelector } from "./chat-model-selector"
 
-function ComposerSpeechControl(props: { disabled: boolean }) {
-  const { textInput } = usePromptInputController()
-
-  return (
-    <SpeechInput
-      className="size-8"
-      disabled={props.disabled}
-      onTranscriptionChange={(transcript) => {
-        const cur = textInput.value
-        textInput.setInput(cur ? `${cur} ${transcript}` : transcript)
-      }}
-      size="icon"
-      type="button"
-      variant="ghost"
-    />
-  )
-}
+const THINKING_LEVELS: Array<{ label: string; value: ThinkingLevel }> = [
+  { label: "Off", value: "off" },
+  { label: "Minimal", value: "minimal" },
+  { label: "Low", value: "low" },
+  { label: "Medium", value: "medium" },
+  { label: "High", value: "high" },
+]
 
 function ChatComposerInner(props: {
   error?: string
@@ -58,20 +53,22 @@ function ChatComposerInner(props: {
     modelId: string
   ) => Promise<void> | void
   onSend: (value: string) => Promise<void> | void
+  onThinkingLevelChange: (level: ThinkingLevel) => Promise<void> | void
   providerGroup: ProviderGroupId
+  thinkingLevel: ThinkingLevel
 }) {
   const { textInput } = usePromptInputController()
   const text = textInput.value
 
   const handleSubmit = React.useEffectEvent(
-    async (message: PromptInputMessage) => {
+    (message: PromptInputMessage) => {
       const next = message.text.trim()
 
       if (!next || props.isStreaming) {
         return
       }
 
-      await props.onSend(next)
+      void props.onSend(next)
     }
   )
 
@@ -81,6 +78,9 @@ function ChatComposerInner(props: {
       ? "streaming"
       : "ready"
 
+  const currentModel = getModelForGroup(props.providerGroup, props.model)
+  const supportsThinking = currentModel.reasoning === true
+
   return (
     <div className="mx-auto grid w-full max-w-4xl gap-4">
       <PromptInput onSubmit={handleSubmit}>
@@ -89,7 +89,10 @@ function ChatComposerInner(props: {
         </PromptInputHeader>
 
         <PromptInputBody>
-          <PromptInputTextarea placeholder="What would you like to know?" />
+          <PromptInputTextarea
+            className="min-h-[4.5rem] text-sm font-medium leading-6 text-foreground placeholder:text-muted-foreground md:text-base"
+            placeholder="What would you like to know?"
+          />
         </PromptInputBody>
 
         <PromptInputFooter>
@@ -108,23 +111,37 @@ function ChatComposerInner(props: {
               </PromptInputActionMenuContent>
             </PromptInputActionMenu>
 
-            <ComposerSpeechControl disabled={props.isStreaming} />
-
-            <PromptInputButton
-              aria-label="Web search"
-              disabled
-              tooltip="Search is not available in this version."
-              type="button"
-            >
-              <GlobeIcon className="size-4" />
-            </PromptInputButton>
-
             <ChatModelSelector
               disabled={props.isStreaming}
               model={props.model}
               onSelect={props.onSelectModel}
               providerGroup={props.providerGroup}
             />
+
+            {supportsThinking ? (
+              <Select
+                disabled={props.isStreaming}
+                onValueChange={(value) => {
+                  void props.onThinkingLevelChange(value as ThinkingLevel)
+                }}
+                value={props.thinkingLevel}
+              >
+                <SelectTrigger
+                  aria-label="Thinking mode"
+                  className="min-w-24"
+                  size="sm"
+                >
+                  <SelectValue placeholder="Thinking" />
+                </SelectTrigger>
+                <SelectContent>
+                  {THINKING_LEVELS.map((option) => (
+                    <SelectItem key={option.value} value={option.value}>
+                      {option.label}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            ) : null}
           </PromptInputTools>
 
           <PromptInputSubmit
@@ -175,7 +192,9 @@ export function ChatComposer(props: {
     modelId: string
   ) => Promise<void> | void
   onSend: (value: string) => Promise<void> | void
+  onThinkingLevelChange: (level: ThinkingLevel) => Promise<void> | void
   providerGroup: ProviderGroupId
+  thinkingLevel: ThinkingLevel
 }) {
   return (
     <PromptInputProvider>

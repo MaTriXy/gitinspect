@@ -1,11 +1,16 @@
 import * as React from "react"
+import type { ProviderGroupId, ProviderId } from "@/types/models"
+import type { SessionData } from "@/types/storage"
 import { runtimeClient } from "@/agent/runtime-client"
 import { getSetting, listProviderKeys, setSetting } from "@/db/schema"
 import {
+  getCanonicalProvider,
+  getConnectedProviders,
   getDefaultModelForGroup,
   getDefaultProviderGroup,
   getPreferredProviderGroup,
   getProviderGroups,
+  getVisibleProviderGroups,
   hasModelForGroup,
   isProviderGroupId,
 } from "@/models/catalog"
@@ -16,8 +21,6 @@ import {
   loadSession,
   persistSessionSnapshot,
 } from "@/sessions/session-service"
-import type { ProviderGroupId, ProviderId } from "@/types/models"
-import type { SessionData } from "@/types/storage"
 
 export interface AppBootstrapState {
   error?: string
@@ -29,17 +32,68 @@ function isProviderId(value: string): value is ProviderId {
   return getProviderGroups().includes(value as ProviderGroupId) && value !== "opencode-free"
 }
 
+function normalizeVisibleSession(
+  session: SessionData,
+  visibleProviderGroups: Array<ProviderGroupId>
+): SessionData {
+  const fallbackProviderGroup = visibleProviderGroups[0] ?? "opencode-free"
+  const currentProviderGroup = session.providerGroup ?? session.provider
+  const providerGroup = visibleProviderGroups.includes(currentProviderGroup)
+    ? currentProviderGroup
+    : fallbackProviderGroup
+  const model = hasModelForGroup(providerGroup, session.model)
+    ? session.model
+    : getDefaultModelForGroup(providerGroup).id
+
+  if (providerGroup === currentProviderGroup && model === session.model) {
+    return session
+  }
+
+  return {
+    ...session,
+    model,
+    provider: getCanonicalProvider(providerGroup),
+    providerGroup,
+  }
+}
+
+async function persistVisibleSessionSelection(
+  session: SessionData,
+  visibleProviderGroups: Array<ProviderGroupId>
+): Promise<SessionData> {
+  const normalized = normalizeVisibleSession(session, visibleProviderGroups)
+
+  if (
+    normalized.providerGroup !== session.providerGroup ||
+    normalized.provider !== session.provider ||
+    normalized.model !== session.model
+  ) {
+    await persistSessionSnapshot(normalized)
+  }
+
+  return normalized
+}
+
 export async function loadInitialSession(): Promise<SessionData> {
   const providerKeys = await listProviderKeys()
+  const connectedProviders = getConnectedProviders(providerKeys)
+  const visibleProviderGroups = getVisibleProviderGroups(connectedProviders)
+  const fallbackProviderGroup = getPreferredProviderGroup(connectedProviders)
   const storedProviderGroup = await getSetting("last-used-provider-group")
   const storedProvider = await getSetting("last-used-provider")
   const providerGroup =
     typeof storedProviderGroup === "string" &&
-    isProviderGroupId(storedProviderGroup)
+    isProviderGroupId(storedProviderGroup) &&
+    visibleProviderGroups.includes(storedProviderGroup)
       ? storedProviderGroup
       : typeof storedProvider === "string" && isProviderId(storedProvider)
-        ? getDefaultProviderGroup(storedProvider)
-        : getPreferredProviderGroup(providerKeys.map((record) => record.provider))
+          ? (() => {
+              const nextProviderGroup = getDefaultProviderGroup(storedProvider)
+              return visibleProviderGroups.includes(nextProviderGroup)
+                ? nextProviderGroup
+                : fallbackProviderGroup
+            })()
+          : fallbackProviderGroup
   const storedModel = await getSetting("last-used-model")
   const model =
     typeof storedModel === "string" && hasModelForGroup(providerGroup, storedModel)
@@ -58,14 +112,14 @@ export async function loadInitialSession(): Promise<SessionData> {
     const loaded = await loadSession(explicitSessionId)
 
     if (loaded) {
-      return loaded
+      return await persistVisibleSessionSelection(loaded, visibleProviderGroups)
     }
   }
 
   const recent = await loadMostRecentSession()
 
   if (recent) {
-    return recent
+    return await persistVisibleSessionSelection(recent, visibleProviderGroups)
   }
 
   const created = createSession({
@@ -84,6 +138,13 @@ export function useAppBootstrap(): AppBootstrapState {
 
   React.useEffect(() => {
     let disposed = false
+    const setStateIfMounted = (nextState: AppBootstrapState) => {
+      if (disposed) {
+        return
+      }
+
+      setState(nextState)
+    }
 
     void (async () => {
       try {
@@ -95,23 +156,18 @@ export function useAppBootstrap(): AppBootstrapState {
         await setSetting("last-used-provider", session.provider)
         await setSetting(
           "last-used-provider-group",
-          session.providerGroup ?? session.provider
+          session.providerGroup
         )
         await setLastUsedRepoSource(session.repoSource)
-
-        if (!disposed) {
-          setState({
-            session,
-            status: "ready",
-          })
-        }
+        setStateIfMounted({
+          session,
+          status: "ready",
+        })
       } catch (error) {
-        if (!disposed) {
-          setState({
-            error: error instanceof Error ? error.message : "Bootstrap failed",
-            status: "error",
-          })
-        }
+        setStateIfMounted({
+          error: error instanceof Error ? error.message : "Bootstrap failed",
+          status: "error",
+        })
       }
     })()
 

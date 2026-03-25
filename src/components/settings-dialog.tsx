@@ -172,7 +172,9 @@ export function SettingsDialog(props: {
                 </div>
               </div>
               <div className="max-w-3xl">
-                {section === "providers" ? <ProviderSettings /> : null}
+                {section === "providers" ? (
+                  <ProviderSettings onNavigateToProxy={() => setSection("proxy")} />
+                ) : null}
                 {section === "repo" ? (
                   <RepoSettings
                     disabled={props.settingsDisabled}

@@ -1,10 +1,11 @@
+import * as React from "react"
 import type { ProviderGroupId } from "@/types/models"
 import {
   getDefaultModelForGroup,
   getModelsForGroup,
   getProviderGroupMetadata,
-  getProviderGroups,
 } from "@/models/catalog"
+import { useVisibleProviderGroups } from "@/hooks/use-visible-provider-groups"
 import {
   Select,
   SelectContent,
@@ -19,8 +20,26 @@ export function ModelPicker(props: {
   onChange: (providerGroup: ProviderGroupId, model: string) => void
   providerGroup: ProviderGroupId
 }) {
-  const providerGroups = getProviderGroups()
-  const models = getModelsForGroup(props.providerGroup)
+  const providerGroups = useVisibleProviderGroups()
+  const activeProviderGroup = providerGroups.includes(props.providerGroup)
+    ? props.providerGroup
+    : providerGroups[0] ?? "opencode-free"
+  const activeModel =
+    activeProviderGroup === props.providerGroup
+      ? props.model
+      : getDefaultModelForGroup(activeProviderGroup).id
+  const models = getModelsForGroup(activeProviderGroup)
+
+  React.useEffect(() => {
+    if (props.disabled || props.providerGroup === activeProviderGroup) {
+      return
+    }
+
+    void props.onChange(
+      activeProviderGroup,
+      getDefaultModelForGroup(activeProviderGroup).id
+    )
+  }, [activeProviderGroup, props.disabled, props.onChange, props.providerGroup])
 
   return (
     <div className="flex flex-wrap items-center gap-2">
@@ -31,7 +50,7 @@ export function ModelPicker(props: {
           const defaultModel = getDefaultModelForGroup(providerGroup)
           props.onChange(providerGroup, defaultModel.id)
         }}
-        value={props.providerGroup}
+        value={activeProviderGroup}
       >
         <SelectTrigger className="min-w-40">
           <SelectValue />
@@ -46,8 +65,8 @@ export function ModelPicker(props: {
       </Select>
       <Select
         disabled={props.disabled}
-        onValueChange={(value) => props.onChange(props.providerGroup, value)}
-        value={props.model}
+        onValueChange={(value) => props.onChange(activeProviderGroup, value)}
+        value={activeModel}
       >
         <SelectTrigger className="min-w-52">
           <SelectValue />

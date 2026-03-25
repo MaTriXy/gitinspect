@@ -115,7 +115,7 @@ function renderSessions(props: {
             </SidebarMenuButton>
             <AlertDialog>
               <AlertDialogTrigger asChild>
-                <SidebarMenuAction disabled={isRunning} showOnHover>
+                <SidebarMenuAction showOnHover>
                   <X className="text-sidebar-foreground" />
                   <span className="sr-only">Delete</span>
                 </SidebarMenuAction>
@@ -124,6 +124,9 @@ function renderSessions(props: {
                 <AlertDialogHeader>
                   <AlertDialogTitle>Delete Chat</AlertDialogTitle>
                   <AlertDialogDescription>
+                    {isRunning
+                      ? "This chat is still receiving a response. Deleting will stop it and remove the session. "
+                      : ""}
                     Are you sure you want to delete &quot;{session.title}&quot;? This
                     action cannot be undone.
                   </AlertDialogDescription>

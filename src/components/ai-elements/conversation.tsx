@@ -1,18 +1,18 @@
 "use client";
 
-import { Button } from "@/components/ui/button";
-import { cn } from "@/lib/utils";
-import type { UIMessage } from "ai";
 import { ArrowDownIcon, DownloadIcon } from "lucide-react";
-import type { ComponentProps } from "react";
 import { useCallback } from "react";
 import { StickToBottom, useStickToBottomContext } from "use-stick-to-bottom";
+import type { ComponentProps } from "react";
+import type { UIMessage } from "ai";
+import { cn } from "@/lib/utils";
+import { Button } from "@/components/ui/button";
 
 export type ConversationProps = ComponentProps<typeof StickToBottom>;
 
 export const Conversation = ({ className, ...props }: ConversationProps) => (
   <StickToBottom
-    className={cn("relative flex-1 overflow-y-hidden", className)}
+    className={cn("relative flex-1 min-h-0 overflow-hidden", className)}
     initial="smooth"
     resize="smooth"
     role="log"
@@ -26,10 +26,15 @@ export type ConversationContentProps = ComponentProps<
 
 export const ConversationContent = ({
   className,
+  scrollClassName,
   ...props
 }: ConversationContentProps) => (
   <StickToBottom.Content
     className={cn("flex flex-col gap-8 p-4", className)}
+    scrollClassName={cn(
+      "scrollbar-thin scrollbar-thumb-border scrollbar-track-transparent pb-[calc(var(--chat-input-height,0px)+16px)]",
+      scrollClassName
+    )}
     {...props}
   />
 );
@@ -73,6 +78,7 @@ export type ConversationScrollButtonProps = ComponentProps<typeof Button>;
 
 export const ConversationScrollButton = ({
   className,
+  style,
   ...props
 }: ConversationScrollButtonProps) => {
   const { isAtBottom, scrollToBottom } = useStickToBottomContext();
@@ -85,11 +91,15 @@ export const ConversationScrollButton = ({
     !isAtBottom && (
       <Button
         className={cn(
-          "absolute bottom-4 left-[50%] translate-x-[-50%] rounded-full dark:bg-background dark:hover:bg-muted",
+          "absolute left-[50%] translate-x-[-50%] rounded-full bg-background hover:bg-muted",
           className
         )}
         onClick={handleScrollToBottom}
         size="icon"
+        style={{
+          bottom: "calc(var(--chat-input-height, 0px) + 16px)",
+          ...style,
+        }}
         type="button"
         variant="outline"
         {...props}
@@ -110,7 +120,7 @@ export type ConversationDownloadProps = Omit<
   ComponentProps<typeof Button>,
   "onClick"
 > & {
-  messages: UIMessage[];
+  messages: Array<UIMessage>;
   filename?: string;
   formatMessage?: (message: UIMessage, index: number) => string;
 };
@@ -122,7 +132,7 @@ const defaultFormatMessage = (message: UIMessage): string => {
 };
 
 export const messagesToMarkdown = (
-  messages: UIMessage[],
+  messages: Array<UIMessage>,
   formatMessage: (
     message: UIMessage,
     index: number
@@ -153,7 +163,7 @@ export const ConversationDownload = ({
   return (
     <Button
       className={cn(
-        "absolute top-4 right-4 rounded-full dark:bg-background dark:hover:bg-muted",
+        "absolute top-4 right-4 rounded-full bg-background hover:bg-muted",
         className
       )}
       onClick={handleDownload}

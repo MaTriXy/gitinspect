@@ -1,4 +1,6 @@
 import * as React from "react"
+import type { SessionData } from "@/types/storage"
+import { runtimeClient } from "@/agent/runtime-client"
 import { deleteSession } from "@/db/schema"
 import { useAppBootstrap } from "@/hooks/use-app-bootstrap"
 import { useRuntimeSession } from "@/hooks/use-runtime-session"
@@ -10,13 +12,16 @@ import {
   persistLastUsedSessionSettings,
   syncSessionToUrl,
 } from "@/sessions/session-selection"
-import { createSession, persistSessionSnapshot } from "@/sessions/session-service"
+import {
+  createSession,
+  loadSession,
+  persistSessionSnapshot,
+} from "@/sessions/session-service"
 import { Chat } from "@/components/new/chat"
 import { ChatHeader } from "@/components/new/chat-header"
 import { ChatSidebar } from "@/components/new/chat-sidebar"
 import { SettingsDialog } from "@/components/settings-dialog"
 import { SidebarInset, SidebarProvider } from "@/components/ui/sidebar"
-import type { SessionData } from "@/types/storage"
 
 export function ChatShell() {
   const bootstrap = useAppBootstrap()
@@ -88,17 +93,24 @@ function ReadyChatShell(props: {
       return
     }
 
-    const fallbackSession = props.sessions[0]
+    void (async () => {
+      const stillExists = await loadSession(selectedSessionId)
+      if (stillExists !== undefined) {
+        return
+      }
 
-    setSelectedSessionId(fallbackSession.id)
-    syncSessionToUrl(fallbackSession.id)
-    void persistLastUsedSessionSettings({
-      id: fallbackSession.id,
-      model: fallbackSession.model,
-      provider: fallbackSession.provider,
-      providerGroup: fallbackSession.providerGroup,
-      repoSource: fallbackSession.repoSource,
-    })
+      const fallbackSession = props.sessions[0]
+
+      setSelectedSessionId(fallbackSession.id)
+      syncSessionToUrl(fallbackSession.id)
+      void persistLastUsedSessionSettings({
+        id: fallbackSession.id,
+        model: fallbackSession.model,
+        provider: fallbackSession.provider,
+        providerGroup: fallbackSession.providerGroup,
+        repoSource: fallbackSession.repoSource,
+      })
+    })()
   }, [props.sessions, selectedSessionId])
 
   const runningSessionIds = props.sessions
@@ -143,15 +155,20 @@ function ReadyChatShell(props: {
   const handleDeleteSession = React.useEffectEvent(async (sessionId: string) => {
     const remainingSessions = props.sessions.filter((session) => session.id !== sessionId)
 
+    try {
+      await runtimeClient.releaseSession(sessionId)
+    } catch {
+      // Worker unavailable or session never attached — still remove local data.
+    }
+
     await deleteSession(sessionId)
 
     if (sessionId !== selectedSessionId) {
       return
     }
 
-    const fallbackSession = remainingSessions[0]
-
-    if (fallbackSession) {
+    if (remainingSessions.length > 0) {
+      const fallbackSession = remainingSessions[0]
       setSelectedSessionId(fallbackSession.id)
       syncSessionToUrl(fallbackSession.id)
       await persistLastUsedSessionSettings({
@@ -180,7 +197,7 @@ function ReadyChatShell(props: {
 
   return (
     <SidebarProvider>
-      <div className="relative flex min-h-screen w-full overscroll-none">
+      <div className="relative flex h-svh w-full overflow-hidden overscroll-none">
         <ChatSidebar
           activeSessionId={selectedSessionId}
           onCreateSession={handleCreateSession}
@@ -189,12 +206,12 @@ function ReadyChatShell(props: {
           runningSessionIds={runningSessionIds}
           sessions={props.sessions}
         />
-        <SidebarInset className="flex min-w-0 flex-1 flex-col">
+        <SidebarInset className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
           <ChatHeader
             onOpenSettings={() => props.setSettingsOpen(true)}
             title={displayedTitle}
           />
-          <main className="min-h-0 flex-1">
+          <main className="flex min-h-0 flex-1 overflow-hidden">
             {activeSession ? (
               <Chat
                 error={runtime.error ?? activeSession.error}

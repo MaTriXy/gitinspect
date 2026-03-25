@@ -1,5 +1,6 @@
 import * as React from "react"
 import { CheckIcon } from "lucide-react"
+import type { ProviderGroupId } from "@/types/models"
 import {
   ModelSelector,
   ModelSelectorContent,
@@ -13,12 +14,12 @@ import {
 } from "@/components/ai-elements/model-selector"
 import { PromptInputButton } from "@/components/ai-elements/prompt-input"
 import {
+  getDefaultModelForGroup,
   getModelForGroup,
   getModelsForGroup,
   getProviderGroupMetadata,
-  getProviderGroups,
 } from "@/models/catalog"
-import type { ProviderGroupId } from "@/types/models"
+import { useVisibleProviderGroups } from "@/hooks/use-visible-provider-groups"
 import { cn } from "@/lib/utils"
 
 export function ChatModelSelector(props: {
@@ -28,8 +29,26 @@ export function ChatModelSelector(props: {
   providerGroup: ProviderGroupId
 }) {
   const [open, setOpen] = React.useState(false)
-  const providerGroups = getProviderGroups()
-  const selectedModel = getModelForGroup(props.providerGroup, props.model)
+  const providerGroups = useVisibleProviderGroups()
+  const activeProviderGroup = providerGroups.includes(props.providerGroup)
+    ? props.providerGroup
+    : providerGroups[0] ?? "opencode-free"
+  const activeModelId =
+    activeProviderGroup === props.providerGroup
+      ? props.model
+      : getDefaultModelForGroup(activeProviderGroup).id
+  const selectedModel = getModelForGroup(activeProviderGroup, activeModelId)
+
+  React.useEffect(() => {
+    if (props.disabled || props.providerGroup === activeProviderGroup) {
+      return
+    }
+
+    void props.onSelect(
+      activeProviderGroup,
+      getDefaultModelForGroup(activeProviderGroup).id
+    )
+  }, [activeProviderGroup, props.disabled, props.onSelect, props.providerGroup])
 
   return (
     <ModelSelector onOpenChange={setOpen} open={open}>
@@ -54,7 +73,7 @@ export function ChatModelSelector(props: {
               {getModelsForGroup(groupId).map((model) => {
                 const value = `${groupId}:${model.id}`
                 const isSelected =
-                  groupId === props.providerGroup && model.id === props.model
+                  groupId === activeProviderGroup && model.id === activeModelId
 
                 return (
                   <ModelSelectorItem

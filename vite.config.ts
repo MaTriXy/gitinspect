@@ -7,21 +7,25 @@ import viteTsConfigPaths from "vite-tsconfig-paths"
 import tailwindcss from "@tailwindcss/vite"
 import { nitro } from "nitro/vite"
 
+function createTsConfigPathsPlugin() {
+  return viteTsConfigPaths({
+    projects: ["./tsconfig.json"],
+  })
+}
+
 const config = defineConfig({
   plugins: [
     comlink(),
     devtools(),
     nitro(),
     // this is the plugin that enables path aliases
-    viteTsConfigPaths({
-      projects: ["./tsconfig.json"],
-    }),
+    createTsConfigPathsPlugin(),
     tailwindcss(),
     tanstackStart(),
     viteReact(),
   ],
   worker: {
-    plugins: () => [comlink()],
+    plugins: () => [createTsConfigPathsPlugin(), comlink()],
   },
 })
 

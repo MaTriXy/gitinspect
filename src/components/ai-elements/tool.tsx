@@ -130,15 +130,17 @@ export const ToolInput = ({ className, input, ...props }: ToolInputProps) => (
 export type ToolOutputProps = ComponentProps<"div"> & {
   output: ToolPart["output"];
   errorText: ToolPart["errorText"];
+  isError?: boolean;
 };
 
 export const ToolOutput = ({
   className,
   output,
   errorText,
+  isError = false,
   ...props
 }: ToolOutputProps) => {
-  if (!(output || errorText)) {
+  if (!(output || errorText || isError)) {
     return null;
   }
 
@@ -155,12 +157,12 @@ export const ToolOutput = ({
   return (
     <div className={cn("space-y-2", className)} {...props}>
       <h4 className="font-medium text-muted-foreground text-xs uppercase tracking-wide">
-        {errorText ? "Error" : "Result"}
+        {isError ? "Error" : "Result"}
       </h4>
       <div
         className={cn(
           "overflow-x-auto rounded-md text-xs [&_table]:w-full",
-          errorText
+          isError
             ? "bg-destructive/10 text-destructive"
             : "bg-muted/50 text-foreground"
         )}
