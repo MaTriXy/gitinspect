@@ -5,6 +5,7 @@ import type {
   DailyCostAggregate,
   MessageRow,
   ProviderKeyRecord,
+  RecentRepoRow,
   SessionData,
   SessionMetadata,
   SettingsRow,
@@ -16,6 +17,7 @@ export type AppDbTables = {
   dailyCosts: Table<DailyCostAggregate, string>
   messages: Table<MessageRow, string>
   providerKeys: Table<ProviderKeyRecord, string>
+  recentRepos: Table<RecentRepoRow, [string, string, string]>
   sessions: Table<SessionData, string>
   settings: Table<SettingsRow, string>
 }
@@ -48,6 +50,10 @@ function aggregateSessionUsage(messages: ChatMessage[]) {
 }
 
 function inferMessageStatus(message: ChatMessage): MessageRow["status"] {
+  if (message.role === "system") {
+    return "completed"
+  }
+
   if (message.role !== "assistant") {
     return "completed"
   }
@@ -119,6 +125,31 @@ export function applyMigrations(db: Dexie): void {
             }))
           )
         }
+      }
+    })
+
+  db
+    .version(3)
+    .stores({
+      daily_costs: "date",
+      messages:
+        "id, sessionId, [sessionId+timestamp], [sessionId+status], timestamp, status",
+      "provider-keys": "provider, updatedAt",
+      recent_repos: "[owner+repo+ref], lastOpenedAt",
+      sessions: "id, updatedAt, createdAt, provider, model, isStreaming",
+      "sessions-metadata": "id, lastModified, provider, model",
+      settings: "key, updatedAt",
+    })
+    .upgrade(async (tx) => {
+      const settingsTable = tx.table<SettingsRow, string>("settings")
+      for (const key of [
+        "repo.owner",
+        "repo.name",
+        "repo.ref",
+        "repo.token",
+        "active-session-id",
+      ]) {
+        await settingsTable.delete(key)
       }
     })
 }

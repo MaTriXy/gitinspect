@@ -1,11 +1,12 @@
 // Rebuilds the Sitegeist/web-ui Dexie contract with the same store split and local-only persistence model.
-import Dexie, { type EntityTable } from "dexie"
+import Dexie, { type EntityTable, type Table } from "dexie"
 import { getDateKey, getIsoNow } from "@/lib/dates"
 import { applyMigrations } from "@/db/migrations"
 import type {
   DailyCostAggregate,
   MessageRow,
   ProviderKeyRecord,
+  RecentRepoRow,
   SessionData,
   SessionMetadata,
   SettingsRow,
@@ -17,6 +18,7 @@ export class AppDb extends Dexie {
   dailyCosts!: EntityTable<DailyCostAggregate, "date">
   messages!: EntityTable<MessageRow, "id">
   providerKeys!: EntityTable<ProviderKeyRecord, "provider">
+  recentRepos!: Table<RecentRepoRow, [string, string, string]>
   sessions!: EntityTable<SessionData, "id">
   settings!: EntityTable<SettingsRow, "key">
 
@@ -26,12 +28,36 @@ export class AppDb extends Dexie {
     this.dailyCosts = this.table("daily_costs")
     this.messages = this.table("messages")
     this.providerKeys = this.table("provider-keys")
+    this.recentRepos = this.table("recent_repos")
     this.sessions = this.table("sessions")
     this.settings = this.table("settings")
   }
 }
 
 export const db = new AppDb()
+
+export async function touchRecentRepo(
+  source: Pick<RecentRepoRow, "owner" | "repo" | "ref">
+): Promise<void> {
+  const owner = source.owner.trim()
+  const repo = source.repo.trim()
+  const ref = source.ref.trim() || "main"
+
+  if (!owner || !repo) {
+    return
+  }
+
+  await db.recentRepos.put({
+    lastOpenedAt: getIsoNow(),
+    owner,
+    ref,
+    repo,
+  })
+}
+
+export async function listRecentRepos(): Promise<RecentRepoRow[]> {
+  return await db.recentRepos.orderBy("lastOpenedAt").reverse().toArray()
+}
 
 function toSessionMetadata(session: SessionData): SessionMetadata {
   return {

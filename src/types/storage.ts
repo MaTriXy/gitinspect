@@ -14,6 +14,14 @@ export interface RepoSource {
   token?: string
 }
 
+/** Minimal recency index for repos (identity + lastOpenedAt only). */
+export interface RecentRepoRow {
+  lastOpenedAt: string
+  owner: string
+  ref: string
+  repo: string
+}
+
 export interface SessionData {
   cost: number
   createdAt: string
