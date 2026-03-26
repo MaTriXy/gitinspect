@@ -1,34 +1,42 @@
 // Rebuilds the Sitegeist/web-ui Dexie contract with the same store split and local-only persistence model.
 import Dexie, { type EntityTable, type Table } from "dexie"
 import { getDateKey, getIsoNow } from "@/lib/dates"
-import { applyMigrations } from "@/db/migrations"
 import type {
   DailyCostAggregate,
   MessageRow,
   ProviderKeyRecord,
-  RecentRepoRow,
+  RepositoryRow,
   SessionData,
-  SessionMetadata,
   SettingsRow,
 } from "@/types/storage"
 import type { JsonValue } from "@/types/common"
 import type { ProviderId, Usage } from "@/types/models"
 
+const DB_NAME = "gitinspect-store"
+
 export class AppDb extends Dexie {
   dailyCosts!: EntityTable<DailyCostAggregate, "date">
   messages!: EntityTable<MessageRow, "id">
   providerKeys!: EntityTable<ProviderKeyRecord, "provider">
-  recentRepos!: Table<RecentRepoRow, [string, string, string]>
+  repositories!: Table<RepositoryRow, [string, string, string]>
   sessions!: EntityTable<SessionData, "id">
   settings!: EntityTable<SettingsRow, "key">
 
   constructor() {
-    super("gitinspect")
-    applyMigrations(this)
+    super(DB_NAME)
+    this.version(1).stores({
+      daily_costs: "date",
+      messages:
+        "id, sessionId, [sessionId+timestamp], [sessionId+status], timestamp, status",
+      "provider-keys": "provider, updatedAt",
+      repositories: "[owner+repo+ref], lastOpenedAt",
+      sessions: "id, updatedAt, createdAt, provider, model, isStreaming",
+      settings: "key, updatedAt",
+    })
     this.dailyCosts = this.table("daily_costs")
     this.messages = this.table("messages")
     this.providerKeys = this.table("provider-keys")
-    this.recentRepos = this.table("recent_repos")
+    this.repositories = this.table("repositories")
     this.sessions = this.table("sessions")
     this.settings = this.table("settings")
   }
@@ -36,8 +44,8 @@ export class AppDb extends Dexie {
 
 export const db = new AppDb()
 
-export async function touchRecentRepo(
-  source: Pick<RecentRepoRow, "owner" | "repo" | "ref">
+export async function touchRepository(
+  source: Pick<RepositoryRow, "owner" | "repo" | "ref">
 ): Promise<void> {
   const owner = source.owner.trim()
   const repo = source.repo.trim()
@@ -47,7 +55,7 @@ export async function touchRecentRepo(
     return
   }
 
-  await db.recentRepos.put({
+  await db.repositories.put({
     lastOpenedAt: getIsoNow(),
     owner,
     ref,
@@ -55,28 +63,8 @@ export async function touchRecentRepo(
   })
 }
 
-export async function listRecentRepos(): Promise<RecentRepoRow[]> {
-  return await db.recentRepos.orderBy("lastOpenedAt").reverse().toArray()
-}
-
-function toSessionMetadata(session: SessionData): SessionMetadata {
-  return {
-    cost: session.cost,
-    createdAt: session.createdAt,
-    id: session.id,
-    isStreaming: session.isStreaming,
-    lastModified: session.updatedAt,
-    messageCount: session.messageCount,
-    model: session.model,
-    modelId: session.model,
-    preview: session.preview,
-    provider: session.provider,
-    providerGroup: session.providerGroup,
-    repoSource: session.repoSource,
-    thinkingLevel: session.thinkingLevel,
-    title: session.title,
-    usage: session.usage,
-  }
+export async function listRepositories(): Promise<RepositoryRow[]> {
+  return await db.repositories.orderBy("lastOpenedAt").reverse().toArray()
 }
 
 export async function putSession(session: SessionData): Promise<void> {
@@ -116,10 +104,8 @@ export async function getSessionMessages(sessionId: string): Promise<MessageRow[
     .sortBy("timestamp")
 }
 
-export async function listSessionMetadata(): Promise<SessionMetadata[]> {
-  return (await db.sessions.orderBy("updatedAt").reverse().toArray()).map(
-    toSessionMetadata
-  )
+export async function listSessions(): Promise<SessionData[]> {
+  return await db.sessions.orderBy("updatedAt").reverse().toArray()
 }
 
 export async function getLatestSessionId(): Promise<string | undefined> {

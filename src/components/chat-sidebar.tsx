@@ -4,7 +4,7 @@ import {
   SidebarHeader,
   SidebarRail,
 } from "@/components/ui/sidebar"
-import type { SessionMetadata } from "@/types/storage"
+import type { SessionData } from "@/types/storage"
 import { ChatFooter } from "@/components/chat-footer"
 import { ChatLogo } from "@/components/chat-logo"
 import { ChatSessionList } from "@/components/chat-session-list"
@@ -15,7 +15,7 @@ export function ChatSidebar(props: {
   onDeleteSession: (sessionId: string) => void
   onSelectSession: (sessionId: string) => void
   runningSessionIds: string[]
-  sessions: SessionMetadata[]
+  sessions: SessionData[]
 }) {
   return (
     <Sidebar className="border-r-0">

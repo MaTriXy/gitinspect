@@ -1,7 +1,6 @@
 import { getMessageText } from "@/lib/preview"
 import { truncateText } from "@/lib/title"
 import type { ChatMessage } from "@/types/chat"
-import type { SessionData, SessionMetadata } from "@/types/storage"
 
 export function generateTitle(messages: ChatMessage[]): string {
   const firstUser = messages.find((message) => message.role === "user")
@@ -37,24 +36,4 @@ export function hasPersistableExchange(messages: ChatMessage[]): boolean {
     messages.some((message) => message.role === "user") &&
     messages.some((message) => message.role === "assistant")
   )
-}
-
-export function buildSessionMetadata(session: SessionData): SessionMetadata {
-  return {
-    cost: session.cost,
-    createdAt: session.createdAt,
-    id: session.id,
-    isStreaming: session.isStreaming,
-    lastModified: session.updatedAt,
-    messageCount: session.messageCount,
-    model: session.model,
-    modelId: session.model,
-    preview: session.preview,
-    provider: session.provider,
-    providerGroup: session.providerGroup,
-    repoSource: session.repoSource,
-    thinkingLevel: session.thinkingLevel,
-    title: session.title,
-    usage: session.usage,
-  }
 }

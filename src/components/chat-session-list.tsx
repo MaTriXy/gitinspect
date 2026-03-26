@@ -1,6 +1,6 @@
 import { useMemo } from "react"
 import { subDays, startOfDay } from "date-fns"
-import type { SessionMetadata } from "@/types/storage"
+import type { SessionData } from "@/types/storage"
 import { Icons } from "@/components/icons"
 import { Button } from "@/components/ui/button"
 import {
@@ -26,20 +26,16 @@ import {
 } from "@/components/ui/sidebar"
 import { Trash2, X } from "lucide-react"
 
-type SessionListItem = SessionMetadata & {
-  parentID?: string
-}
-
 type CategorizedSessions = {
-  last30Days: SessionListItem[]
-  last7Days: SessionListItem[]
-  older: SessionListItem[]
-  today: SessionListItem[]
-  yesterday: SessionListItem[]
+  last30Days: SessionData[]
+  last7Days: SessionData[]
+  older: SessionData[]
+  today: SessionData[]
+  yesterday: SessionData[]
 }
 
 function getCategorizedSessions(
-  sessions: SessionListItem[]
+  sessions: SessionData[]
 ): CategorizedSessions {
   const todayStart = startOfDay(new Date())
   const yesterdayStart = startOfDay(subDays(new Date(), 1))
@@ -54,10 +50,8 @@ function getCategorizedSessions(
     yesterday: [],
   }
 
-  const filteredSessions = sessions.filter((session) => session.parentID == null)
-
-  for (const session of filteredSessions) {
-    const sessionDayStart = startOfDay(new Date(session.lastModified))
+  for (const session of sessions) {
+    const sessionDayStart = startOfDay(new Date(session.updatedAt))
 
     if (sessionDayStart.getTime() === todayStart.getTime()) {
       categorized.today.push(session)
@@ -93,7 +87,7 @@ function renderSessions(props: {
   onDeleteSession: (sessionId: string) => void
   onSelectSession: (sessionId: string) => void
   runningSessionIds: string[]
-  sessions: SessionListItem[]
+  sessions: SessionData[]
 }) {
   return (
     <SidebarMenu>
@@ -156,7 +150,7 @@ export function ChatSessionList(props: {
   onDeleteSession: (sessionId: string) => void
   onSelectSession: (sessionId: string) => void
   runningSessionIds: string[]
-  sessions: SessionMetadata[]
+  sessions: SessionData[]
 }) {
   const categorizedSessions = useMemo(
     () => getCategorizedSessions(props.sessions),

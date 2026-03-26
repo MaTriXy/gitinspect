@@ -14,8 +14,7 @@ export interface RepoSource {
   token?: string
 }
 
-/** Minimal recency index for repos (identity + lastOpenedAt only). */
-export interface RecentRepoRow {
+export interface RepositoryRow {
   lastOpenedAt: string
   owner: string
   ref: string
@@ -40,24 +39,6 @@ export interface SessionData {
   usage: Usage
 }
 
-export interface SessionMetadata {
-  cost: number
-  createdAt: string
-  id: string
-  isStreaming: boolean
-  lastModified: string
-  messageCount: number
-  model: string
-  modelId: string
-  preview: string
-  provider: ProviderId
-  providerGroup?: ProviderGroupId
-  repoSource?: RepoSource
-  thinkingLevel: ThinkingLevel
-  title: string
-  usage: Usage
-}
-
 export type MessageStatus = "aborted" | "completed" | "error" | "streaming"
 
 export type MessageRow = ChatMessage & {
@@ -77,7 +58,9 @@ export interface ProviderKeyRecord {
   value: string
 }
 
-export type DailyCostByProvider = Partial<Record<ProviderId, Record<string, number>>>
+export type DailyCostByProvider = Partial<
+  Record<ProviderId, Record<string, number>>
+>
 
 export interface DailyCostAggregate {
   byProvider: DailyCostByProvider
