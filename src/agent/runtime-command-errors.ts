@@ -1,17 +1,6 @@
 const BUSY_RUNTIME_ERROR_NAME = "BusyRuntimeError"
 const MISSING_SESSION_RUNTIME_ERROR_NAME = "MissingSessionRuntimeError"
 
-function extractSessionId(message: string): string {
-  const marker = ": "
-  const index = message.lastIndexOf(marker)
-
-  if (index === -1) {
-    return "unknown-session"
-  }
-
-  return message.slice(index + marker.length)
-}
-
 export abstract class RuntimeCommandError extends Error {
   abstract readonly code: "busy" | "missing-session"
   readonly sessionId: string
@@ -47,17 +36,20 @@ export class BusyRuntimeError extends RuntimeCommandError {
   }
 }
 
-export function reviveRuntimeCommandError(error: Error): Error {
+export function reviveRuntimeCommandError(
+  error: Error,
+  sessionId?: string
+): Error {
   if (error instanceof RuntimeCommandError) {
     return error
   }
 
   if (error.name === BUSY_RUNTIME_ERROR_NAME) {
-    return new BusyRuntimeError(extractSessionId(error.message))
+    return new BusyRuntimeError(sessionId ?? "unknown-session")
   }
 
   if (error.name === MISSING_SESSION_RUNTIME_ERROR_NAME) {
-    return new MissingSessionRuntimeError(extractSessionId(error.message))
+    return new MissingSessionRuntimeError(sessionId ?? "unknown-session")
   }
 
   return error

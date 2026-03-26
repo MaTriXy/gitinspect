@@ -1,140 +1,158 @@
-/* eslint-disable @typescript-eslint/require-await */
 import { wrap } from "comlink"
+import type { Remote } from "comlink"
+import type { ProviderGroupId, ThinkingLevel } from "@/types/models"
+import type { SessionWorkerApi } from "@/agent/runtime-worker-types"
 import {
   MissingSessionRuntimeError,
   reviveRuntimeCommandError,
 } from "@/agent/runtime-command-errors"
-import type { RuntimeWorkerApi } from "@/agent/runtime-worker-types"
-import type { ProviderGroupId, ThinkingLevel } from "@/types/models"
 
 const sharedWorkerSupported =
   typeof window !== "undefined" && "SharedWorker" in window
 
-function createWorkerApi(): RuntimeWorkerApi {
-  if (typeof window === "undefined") {
-    throw new Error("Worker runtime requires a browser environment")
-  }
-
-  if (sharedWorkerSupported) {
-    const worker = new SharedWorker(
-      new URL("./runtime-worker", import.meta.url),
-      { name: "gitinspect-runtime", type: "module" }
-    )
-    return wrap<RuntimeWorkerApi>(worker.port)
-  }
-
-  const worker = new Worker(
-    new URL("./runtime-worker", import.meta.url),
-    { name: "gitinspect-runtime", type: "module" }
-  )
-  return wrap<RuntimeWorkerApi>(worker)
+interface WorkerHandle {
+  worker: SharedWorker | Worker
+  api: Remote<SessionWorkerApi>
 }
 
 export class RuntimeClient {
-  private api?: RuntimeWorkerApi
-  private connectError?: Error
-  private connectPromise?: Promise<void>
+  private readonly workers = new Map<string, WorkerHandle>()
+  private readonly initPromises = new Map<
+    string,
+    Promise<WorkerHandle | undefined>
+  >()
 
-  async ensureConnected(): Promise<void> {
-    if (this.connectPromise) {
-      return await this.connectPromise
+  private createWorker(sessionId: string): WorkerHandle {
+    if (typeof window === "undefined") {
+      throw new Error("Runtime requires a browser environment")
     }
 
-    if (this.connectError) {
-      throw this.connectError
+    const url = new URL("./runtime-worker", import.meta.url)
+    const opts = {
+      name: `gitinspect-session-${sessionId}`,
+      type: "module" as const,
     }
 
-    this.connectPromise = (async () => {
-      this.api = createWorkerApi()
-    })().catch((error) => {
-      this.connectError =
-        error instanceof Error ? error : new Error(String(error))
-      this.connectPromise = undefined
-      throw error
-    })
+    if (sharedWorkerSupported) {
+      const worker = new SharedWorker(url, opts)
+      return { worker, api: wrap<SessionWorkerApi>(worker.port) }
+    }
 
-    return await this.connectPromise
+    const worker = new Worker(url, opts)
+    return { worker, api: wrap<SessionWorkerApi>(worker) }
+  }
+
+  private terminateHandle(handle: WorkerHandle): void {
+    if ("port" in handle.worker) {
+      handle.worker.port.close()
+    } else {
+      handle.worker.terminate()
+    }
+  }
+
+  private async getOrCreate(
+    sessionId: string
+  ): Promise<WorkerHandle | undefined> {
+    const existing = this.workers.get(sessionId)
+
+    if (existing) {
+      return existing
+    }
+
+    let pending = this.initPromises.get(sessionId)
+
+    if (pending) {
+      return pending
+    }
+
+    pending = (async () => {
+      try {
+        const handle = this.createWorker(sessionId)
+        const exists = await handle.api.init(sessionId)
+
+        if (!exists) {
+          this.terminateHandle(handle)
+          return undefined
+        }
+
+        this.workers.set(sessionId, handle)
+        return handle
+      } finally {
+        this.initPromises.delete(sessionId)
+      }
+    })()
+
+    this.initPromises.set(sessionId, pending)
+    return pending
   }
 
   private async call<T>(
-    invoke: (api: RuntimeWorkerApi) => Promise<T>
+    sessionId: string,
+    invoke: (api: Remote<SessionWorkerApi>) => Promise<T>
   ): Promise<T> {
-    await this.ensureConnected()
+    const handle = await this.getOrCreate(sessionId)
 
-    if (!this.api) {
-      throw new Error("Runtime connection unavailable")
+    if (!handle) {
+      throw new MissingSessionRuntimeError(sessionId)
     }
 
     try {
-      return await invoke(this.api)
+      return await invoke(handle.api)
     } catch (error) {
       if (error instanceof Error) {
-        throw reviveRuntimeCommandError(error)
+        throw reviveRuntimeCommandError(error, sessionId)
       }
 
       throw error
     }
   }
 
-  private async callSession(
-    sessionId: string,
-    invoke: (api: RuntimeWorkerApi) => Promise<void>
-  ): Promise<void> {
-    await this.call(async (api) => {
-      const exists = await api.ensureSession(sessionId)
-
-      if (!exists) {
-        throw new MissingSessionRuntimeError(sessionId)
-      }
-
-      await invoke(api)
-    })
-  }
-
-  private async callSessionAction(
-    sessionId: string,
-    invoke: (api: RuntimeWorkerApi) => Promise<void>
-  ): Promise<void> {
-    await this.call(async (api) => {
-      const exists = await api.ensureSession(sessionId)
-
-      if (!exists) {
-        return
-      }
-
-      await invoke(api)
-    })
-  }
-
   async ensureSession(sessionId: string): Promise<boolean> {
-    return await this.call(async (api) => await api.ensureSession(sessionId))
+    const handle = await this.getOrCreate(sessionId)
+    return handle !== undefined
   }
 
   async send(sessionId: string, content: string): Promise<void> {
-    await this.callSession(
-      sessionId,
-      async (api) => await api.send(sessionId, content)
-    )
+    await this.call(sessionId, async (api) => await api.send(content))
   }
 
   async abort(sessionId: string): Promise<void> {
-    await this.callSessionAction(
-      sessionId,
-      async (api) => await api.abort(sessionId)
-    )
+    const handle = this.workers.get(sessionId)
+
+    if (!handle) {
+      return
+    }
+
+    try {
+      await handle.api.abort()
+    } catch (error) {
+      if (error instanceof Error) {
+        throw reviveRuntimeCommandError(error, sessionId)
+      }
+
+      throw error
+    }
   }
 
   async releaseSession(sessionId: string): Promise<void> {
-    await this.call(async (api) => await api.releaseSession(sessionId))
+    const handle = this.workers.get(sessionId)
+
+    if (!handle) {
+      return
+    }
+
+    try {
+      await handle.api.dispose()
+    } catch {
+      // Best-effort teardown; worker may already be gone.
+    }
+
+    this.terminateHandle(handle)
+    this.workers.delete(sessionId)
   }
 
-  async refreshGithubToken(
-    sessionId: string
-  ): Promise<void> {
-    await this.callSession(
-      sessionId,
-      async (api) => await api.refreshGithubToken(sessionId)
-    )
+  async refreshGithubToken(sessionId: string): Promise<void> {
+    await this.call(sessionId, async (api) => await api.refreshGithubToken())
   }
 
   async setModelSelection(
@@ -142,10 +160,8 @@ export class RuntimeClient {
     providerGroup: ProviderGroupId,
     modelId: string
   ): Promise<void> {
-    await this.callSession(
-      sessionId,
-      async (api) =>
-        await api.setModelSelection(sessionId, providerGroup, modelId)
+    await this.call(sessionId, async (api) =>
+      api.setModelSelection(providerGroup, modelId)
     )
   }
 
@@ -153,9 +169,8 @@ export class RuntimeClient {
     sessionId: string,
     thinkingLevel: ThinkingLevel
   ): Promise<void> {
-    await this.callSession(
-      sessionId,
-      async (api) => await api.setThinkingLevel(sessionId, thinkingLevel)
+    await this.call(sessionId, async (api) =>
+      api.setThinkingLevel(thinkingLevel)
     )
   }
 }
