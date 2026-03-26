@@ -87,22 +87,16 @@ const SETTINGS_SECTIONS: Array<{
 ]
 
 export function SettingsDialog(props: {
-  initialSection?: SettingsSection
   onGithubTokenSaved?: () => void | Promise<void>
   onOpenChange: (open: boolean) => void
+  onSectionChange?: (section: SettingsSection) => void
   open: boolean
+  section: SettingsSection
   session?: SessionData
   settingsDisabled?: boolean
 }) {
-  const [section, setSection] = React.useState<SettingsSection>("providers")
   const activeSection =
-    SETTINGS_SECTIONS.find((item) => item.id === section) ?? SETTINGS_SECTIONS[0]
-
-  React.useEffect(() => {
-    if (props.open && props.initialSection) {
-      setSection(props.initialSection)
-    }
-  }, [props.open, props.initialSection])
+    SETTINGS_SECTIONS.find((item) => item.id === props.section) ?? SETTINGS_SECTIONS[0]
 
   return (
     <Dialog onOpenChange={props.onOpenChange} open={props.open}>
@@ -117,8 +111,8 @@ export function SettingsDialog(props: {
                     {SETTINGS_SECTIONS.map((item) => (
                       <SidebarMenuItem key={item.id}>
                         <SidebarMenuButton
-                          isActive={section === item.id}
-                          onClick={() => setSection(item.id)}
+                          isActive={props.section === item.id}
+                          onClick={() => props.onSectionChange?.(item.id)}
                         >
                           <item.icon />
                           <span>{item.label}</span>
@@ -149,10 +143,10 @@ export function SettingsDialog(props: {
                 className="gap-0 md:hidden"
                 onValueChange={(value) => {
                   if (isSettingsSection(value)) {
-                    setSection(value)
+                    props.onSectionChange?.(value)
                   }
                 }}
-                value={section}
+                value={props.section}
               >
                 <TabsList
                   className="-mx-1 h-auto w-[calc(100%+0.5rem)] justify-start overflow-x-auto px-1"
@@ -160,10 +154,11 @@ export function SettingsDialog(props: {
                 >
                   {SETTINGS_SECTIONS.map((item) => (
                     <TabsTrigger
-                      className="shrink-0 px-0 pb-2"
+                      className="shrink-0 gap-1.5 px-0 pb-2"
                       key={item.id}
                       value={item.id}
                     >
+                      <item.icon className="size-4 shrink-0" />
                       {item.label}
                     </TabsTrigger>
                   ))}
@@ -178,22 +173,24 @@ export function SettingsDialog(props: {
                 </div>
               </div>
               <div className="max-w-3xl">
-                {section === "providers" ? (
-                  <ProviderSettings onNavigateToProxy={() => setSection("proxy")} />
+                {props.section === "providers" ? (
+                  <ProviderSettings
+                    onNavigateToProxy={() => props.onSectionChange?.("proxy")}
+                  />
                 ) : null}
-                {section === "github" ? (
+                {props.section === "github" ? (
                   <GithubTokenSettings
                     disabled={props.settingsDisabled}
                     onTokenSaved={props.onGithubTokenSaved}
                   />
                 ) : null}
-                {section === "proxy" ? (
+                {props.section === "proxy" ? (
                   <ProxySettings disabled={props.settingsDisabled} />
                 ) : null}
-                {section === "costs" ? (
+                {props.section === "costs" ? (
                   <CostsPanel session={props.session} />
                 ) : null}
-                {section === "about" ? <AboutPanel /> : null}
+                {props.section === "about" ? <AboutPanel /> : null}
               </div>
             </div>
           </main>
@@ -203,7 +200,7 @@ export function SettingsDialog(props: {
   )
 }
 
-function isSettingsSection(value: string): value is SettingsSection {
+export function isSettingsSection(value: string): value is SettingsSection {
   return SETTINGS_SECTIONS.some((section) => section.id === value)
 }
 
