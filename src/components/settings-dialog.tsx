@@ -1,6 +1,7 @@
 import * as React from "react"
+import { useNavigate, useSearch } from "@tanstack/react-router"
 import { ArrowUpRight, BadgeCheck } from "lucide-react"
-import type { SessionData } from "@/types/storage"
+import { runtimeClient } from "@/agent/runtime-client"
 import { Icons } from "@/components/icons"
 import { CostsPanel } from "@/components/costs-panel"
 import { GithubTokenSettings } from "@/components/github-token-settings"
@@ -39,6 +40,8 @@ import {
   SidebarMenuItem,
   SidebarProvider,
 } from "@/components/ui/sidebar"
+import { useCurrentRouteTarget } from "@/hooks/use-current-route-target"
+import { useSelectedSessionSummary } from "@/hooks/use-selected-session-summary"
 
 export type SettingsSection =
   | "providers"
@@ -86,20 +89,56 @@ const SETTINGS_SECTIONS: Array<{
   },
 ]
 
-export function SettingsDialog(props: {
-  onGithubTokenSaved?: () => void | Promise<void>
-  onOpenChange: (open: boolean) => void
-  onSectionChange?: (section: SettingsSection) => void
-  open: boolean
-  section: SettingsSection
-  session?: SessionData
-  settingsDisabled?: boolean
-}) {
+export function AppSettingsDialog() {
+  const navigate = useNavigate()
+  const search = useSearch({ strict: false })
+  const currentRouteTarget = useCurrentRouteTarget()
+  const sessionId =
+    typeof search.session === "string" ? search.session : undefined
+  const session = useSelectedSessionSummary(sessionId)
+  const section =
+    typeof search.settings === "string" && isSettingsSection(search.settings)
+      ? search.settings
+      : "providers"
+  const open =
+    typeof search.settings === "string" && isSettingsSection(search.settings)
+  const settingsDisabled = session?.isStreaming ?? false
+  const sidebar = search.sidebar === "open" ? "open" : undefined
+  const initialQuery =
+    typeof search.initialQuery === "string" ? search.initialQuery : undefined
   const activeSection =
-    SETTINGS_SECTIONS.find((item) => item.id === props.section) ?? SETTINGS_SECTIONS[0]
+    SETTINGS_SECTIONS.find((item) => item.id === section) ?? SETTINGS_SECTIONS[0]
+
+  const navigateWithSettings = (nextSection: SettingsSection | undefined) => {
+    if (currentRouteTarget.to === "/") {
+      void navigate({
+        to: "/",
+        search: {
+          settings: nextSection,
+          sidebar,
+        },
+      })
+      return
+    }
+
+    void navigate({
+      ...currentRouteTarget,
+      search: {
+        initialQuery,
+        session: sessionId,
+        settings: nextSection,
+        sidebar,
+      },
+    })
+  }
 
   return (
-    <Dialog onOpenChange={props.onOpenChange} open={props.open}>
+    <Dialog
+      onOpenChange={(nextOpen) => {
+        navigateWithSettings(nextOpen ? section : undefined)
+      }}
+      open={open}
+    >
       <DialogContent className="overflow-hidden p-0 md:max-h-[620px] md:max-w-5xl">
         <DialogTitle className="sr-only">Settings</DialogTitle>
         <SidebarProvider className="items-start">
@@ -111,8 +150,10 @@ export function SettingsDialog(props: {
                     {SETTINGS_SECTIONS.map((item) => (
                       <SidebarMenuItem key={item.id}>
                         <SidebarMenuButton
-                          isActive={props.section === item.id}
-                          onClick={() => props.onSectionChange?.(item.id)}
+                          isActive={section === item.id}
+                          onClick={() => {
+                            navigateWithSettings(item.id)
+                          }}
                         >
                           <item.icon />
                           <span>{item.label}</span>
@@ -143,10 +184,10 @@ export function SettingsDialog(props: {
                 className="gap-0 md:hidden"
                 onValueChange={(value) => {
                   if (isSettingsSection(value)) {
-                    props.onSectionChange?.(value)
+                    navigateWithSettings(value)
                   }
                 }}
-                value={props.section}
+                value={section}
               >
                 <TabsList
                   className="-mx-1 h-auto w-[calc(100%+0.5rem)] justify-start overflow-x-auto px-1"
@@ -173,24 +214,32 @@ export function SettingsDialog(props: {
                 </div>
               </div>
               <div className="max-w-3xl">
-                {props.section === "providers" ? (
+                {section === "providers" ? (
                   <ProviderSettings
-                    onNavigateToProxy={() => props.onSectionChange?.("proxy")}
+                    onNavigateToProxy={() => {
+                      navigateWithSettings("proxy")
+                    }}
                   />
                 ) : null}
-                {props.section === "github" ? (
+                {section === "github" ? (
                   <GithubTokenSettings
-                    disabled={props.settingsDisabled}
-                    onTokenSaved={props.onGithubTokenSaved}
+                    disabled={settingsDisabled}
+                    onTokenSaved={async () => {
+                      if (!sessionId) {
+                        return
+                      }
+
+                      await runtimeClient.refreshGithubToken(sessionId)
+                    }}
                   />
                 ) : null}
-                {props.section === "proxy" ? (
-                  <ProxySettings disabled={props.settingsDisabled} />
+                {section === "proxy" ? (
+                  <ProxySettings disabled={settingsDisabled} />
                 ) : null}
-                {props.section === "costs" ? (
-                  <CostsPanel session={props.session} />
+                {section === "costs" ? (
+                  <CostsPanel session={session} />
                 ) : null}
-                {props.section === "about" ? <AboutPanel /> : null}
+                {section === "about" ? <AboutPanel /> : null}
               </div>
             </div>
           </main>
