@@ -233,31 +233,27 @@ export async function getTotalCost(): Promise<number> {
 
 export function getCostsByProviderFromAggregates(
   dailyCosts: DailyCostAggregate[]
-): Record<ProviderId, number> {
-  const totals: Record<ProviderId, number> = {
-    anthropic: 0,
-    "github-copilot": 0,
-    "google-gemini-cli": 0,
-    openai: 0,
-    opencode: 0,
-    "openai-codex": 0,
-  }
+): Partial<Record<ProviderId, number>> {
+  const totals: Partial<Record<ProviderId, number>> = {}
 
   for (const daily of dailyCosts) {
     for (const [provider, models] of Object.entries(daily.byProvider) as Array<
       [ProviderId, Record<string, number> | undefined]
     >) {
-      totals[provider] += Object.values(models ?? {}).reduce(
+      const sum = Object.values(models ?? {}).reduce(
         (subtotal, value) => subtotal + value,
         0
       )
+      totals[provider] = (totals[provider] ?? 0) + sum
     }
   }
 
   return totals
 }
 
-export async function getCostsByProvider(): Promise<Record<ProviderId, number>> {
+export async function getCostsByProvider(): Promise<
+  Partial<Record<ProviderId, number>>
+> {
   return getCostsByProviderFromAggregates(await listDailyCosts())
 }
 

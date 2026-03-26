@@ -222,6 +222,7 @@ function shouldUseProxyForProvider(provider: string, apiKey: string): boolean {
     case "openai":
     case "openai-codex":
     case "opencode":
+    case "opencode-go":
       return true
     default:
       return false

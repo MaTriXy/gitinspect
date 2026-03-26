@@ -1,5 +1,6 @@
 import * as React from "react"
 import { useLiveQuery } from "dexie-react-hooks"
+import { toast } from "sonner"
 import {
   disconnectProvider,
   getOAuthProviderName,
@@ -9,8 +10,10 @@ import {
 } from "@/auth/auth-service"
 import { isOAuthCredentials } from "@/auth/oauth-types"
 import { db } from "@/db/schema"
-import { getProviders } from "@/models/catalog"
-import { PROVIDER_METADATA } from "@/models/provider-metadata"
+import {
+  getProviderGroupMetadata,
+  getSortedApiKeyProvidersForSettings,
+} from "@/models/provider-registry"
 import {
   DEFAULT_PROXY_URL,
   PROXY_ENABLED_KEY,
@@ -18,7 +21,7 @@ import {
   getProxyConfig,
   proxyConfigFromSettingsRows,
 } from "@/proxy/settings"
-import type { ProviderId } from "@/types/models"
+import type { ProviderGroupId, ProviderId } from "@/types/models"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import {
@@ -29,22 +32,30 @@ import {
   ItemTitle,
 } from "@/components/ui/item"
 
-const SUBSCRIPTION_OAUTH_ORDER: OAuthProviderId[] = [
+const SUBSCRIPTION_OAUTH_PROVIDERS: OAuthProviderId[] = [
   "anthropic",
   "openai-codex",
   "github-copilot",
   "google-gemini-cli",
 ]
 
-const OAUTH_ONLY_PROVIDERS = new Set<ProviderId>([
-  "openai-codex",
-  "github-copilot",
-  "google-gemini-cli",
-])
+function sortSubscriptionOAuthByName(
+  providers: OAuthProviderId[]
+): OAuthProviderId[] {
+  return [...providers].sort((a, b) =>
+    getOAuthProviderName(a).localeCompare(getOAuthProviderName(b), undefined, {
+      sensitivity: "base",
+    })
+  )
+}
 
 function isOAuthConnected(value: string | undefined): boolean {
   const trimmed = value?.trim()
   return Boolean(trimmed && isOAuthCredentials(trimmed))
+}
+
+function apiKeyProviderLabel(provider: ProviderId): string {
+  return getProviderGroupMetadata(provider as ProviderGroupId).label
 }
 
 export function ProviderSettings(props: {
@@ -76,7 +87,7 @@ export function ProviderSettings(props: {
   const [deviceFlowInfo, setDeviceFlowInfo] = React.useState<
     Partial<
       Record<
-        ProviderId,
+        OAuthProviderId,
         {
           userCode: string
           verificationUri: string
@@ -100,6 +111,16 @@ export function ProviderSettings(props: {
     typeof window === "undefined"
       ? "/auth/callback"
       : `${window.location.origin}/auth/callback`
+
+  const apiKeyProviders = React.useMemo(
+    () => getSortedApiKeyProvidersForSettings(),
+    []
+  )
+
+  const subscriptionOAuthProviders = React.useMemo(
+    () => sortSubscriptionOAuthByName(SUBSCRIPTION_OAUTH_PROVIDERS),
+    []
+  )
 
   return (
     <div className="space-y-10">
@@ -134,7 +155,7 @@ export function ProviderSettings(props: {
         </div>
 
         <div className="flex flex-col gap-3">
-          {SUBSCRIPTION_OAUTH_ORDER.map((provider) => {
+          {subscriptionOAuthProviders.map((provider) => {
             const record = providerKeys.find(
               (item) => item.provider === provider
             )
@@ -155,7 +176,14 @@ export function ProviderSettings(props: {
                     {connected ? (
                       <Button
                         onClick={async () => {
-                          await disconnectProvider(provider)
+                          try {
+                            await disconnectProvider(provider)
+                            toast.success(
+                              `${getOAuthProviderName(provider)} disconnected`
+                            )
+                          } catch {
+                            toast.error("Could not disconnect")
+                          }
                         }}
                         size="sm"
                         variant="outline"
@@ -165,24 +193,36 @@ export function ProviderSettings(props: {
                     ) : (
                       <Button
                         onClick={async () => {
-                          const proxy = await getProxyConfig()
-                          const credentials = await oauthLogin(
-                            provider,
-                            redirectUri,
-                            (info) =>
-                              setDeviceFlowInfo((current) => ({
-                                ...current,
-                                [provider]: info,
-                              })),
-                            provider === "anthropic" && proxy.enabled
-                              ? { proxyUrl: proxy.url }
-                              : undefined
-                          )
+                          try {
+                            const proxy = await getProxyConfig()
+                            const credentials = await oauthLogin(
+                              provider,
+                              redirectUri,
+                              (info) =>
+                                setDeviceFlowInfo((current) => ({
+                                  ...current,
+                                  [provider]: info,
+                                })),
+                              provider === "anthropic" && proxy.enabled
+                                ? { proxyUrl: proxy.url }
+                                : undefined
+                            )
 
-                          await setProviderApiKey(
-                            provider,
-                            JSON.stringify(credentials)
-                          )
+                            await setProviderApiKey(
+                              provider,
+                              JSON.stringify(credentials)
+                            )
+                            setDeviceFlowInfo((current) => {
+                              const next = { ...current }
+                              delete next[provider]
+                              return next
+                            })
+                            toast.success(
+                              `${getOAuthProviderName(provider)} connected`
+                            )
+                          } catch {
+                            toast.error("Sign-in did not complete")
+                          }
                         }}
                         size="sm"
                         variant="secondary"
@@ -226,13 +266,14 @@ export function ProviderSettings(props: {
         </div>
 
         <div className="flex flex-col gap-6">
-          {getProviders().filter((provider) => !OAUTH_ONLY_PROVIDERS.has(provider)).map((provider) => (
+          {apiKeyProviders.map((provider) => (
             <div className="space-y-2" key={provider}>
               <div className="text-sm font-medium text-foreground">
-                {PROVIDER_METADATA[provider].label}
+                {apiKeyProviderLabel(provider)}
               </div>
               <div className="flex gap-2">
                 <Input
+                  autoComplete="off"
                   className="min-w-0 flex-1"
                   onChange={(event) =>
                     setDraftValues((current) => ({
@@ -241,6 +282,7 @@ export function ProviderSettings(props: {
                     }))
                   }
                   placeholder="Enter API key"
+                  type="password"
                   value={draftValues[provider] ?? ""}
                 />
                 <Button
@@ -249,10 +291,18 @@ export function ProviderSettings(props: {
                     const value = draftValues[provider]?.trim()
 
                     if (!value) {
+                      toast.warning("Enter an API key first")
                       return
                     }
 
-                    await setProviderApiKey(provider, value)
+                    try {
+                      await setProviderApiKey(provider, value)
+                      toast.success(
+                        `${apiKeyProviderLabel(provider)} API key saved`
+                      )
+                    } catch {
+                      toast.error("Could not save API key")
+                    }
                   }}
                   size="sm"
                   variant="secondary"

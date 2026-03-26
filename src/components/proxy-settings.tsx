@@ -1,4 +1,5 @@
 import * as React from "react"
+import { toast } from "sonner"
 import { DEFAULT_PROXY_URL, getProxyConfig, setProxyConfig } from "@/proxy/settings"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -38,7 +39,7 @@ export function ProxySettings(props: { disabled?: boolean }) {
           <div className="space-y-1">
             <Label htmlFor="proxy-enabled">Enable proxy</Label>
             <div className="text-xs text-muted-foreground">
-              OpenAI Codex requests and Anthropic subscription auth use the proxy when enabled. Gemini and Copilot stay direct.
+              When enabled, OpenAI, OpenAI Codex, OpenCode, and OpenCode Go requests use the proxy; Anthropic subscription OAuth can use it for token calls. Gemini and Copilot stay direct.
             </div>
           </div>
           <Switch
@@ -73,6 +74,9 @@ export function ProxySettings(props: { disabled?: boolean }) {
                   enabled,
                   url: url.trim(),
                 })
+                toast.success("Proxy settings saved")
+              } catch {
+                toast.error("Could not save proxy settings")
               } finally {
                 setIsSaving(false)
               }

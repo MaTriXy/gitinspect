@@ -1,22 +1,19 @@
-import type { Model, Usage as PiUsage, Api } from "@mariozechner/pi-ai"
+import type {
+  Api,
+  KnownProvider,
+  Model,
+  Usage as PiUsage,
+} from "@mariozechner/pi-ai"
 
-export type CanonicalProviderId =
-  | "anthropic"
-  | "github-copilot"
-  | "google-gemini-cli"
-  | "openai"
-  | "openai-codex"
-  | "opencode"
+export type { KnownProvider }
 
-export type ProviderId = CanonicalProviderId
+/** Canonical provider id from the shared pi-ai registry. */
+export type ProviderId = KnownProvider
 
-export type ProviderGroupId =
-  | CanonicalProviderId
-  | "opencode-free"
-
+export type ProviderGroupId = KnownProvider | "opencode-free"
 
 export interface ProviderGroupDefinition {
-  canonicalProvider: CanonicalProviderId
+  canonicalProvider: ProviderId
   description: string
   id: ProviderGroupId
   label: string

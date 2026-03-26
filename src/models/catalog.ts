@@ -1,6 +1,8 @@
-// App-facing catalog helpers layered on top of the vendored pi-ai registry.
-// The app no longer carries its own model snapshot; defaults are derived from the
-// first model exposed by each supported provider.
+// App-facing catalog helpers layered on the shared pi-ai registry.
+import {
+  getModel as getRegistryModel,
+  getModels as getRegistryModels,
+} from "@mariozechner/pi-ai"
 import type {
   ModelDefinition,
   ProviderGroupId,
@@ -8,38 +10,51 @@ import type {
   Usage,
 } from "@/types/models"
 import {
-  getPiAiModel,
-  getPiAiModels,
-  getPiAiProviders,
-} from "@/models/pi-ai-models"
-import {
   isOAuthCredentials,
   parseOAuthCredentials,
 } from "@/auth/oauth-types"
 import {
-  getProviderGroups as getAtlasProviderGroups,
+  getAtlasProviderGroups,
   getCanonicalProvider,
   getDefaultProviderGroup,
   getProviderGroupMetadata,
+  getRuntimeSupportedProviders,
   isProviderGroupId,
-} from "@/models/provider-atlas"
+} from "@/models/provider-registry"
 
-const SUPPORTED_PROVIDERS = getPiAiProviders()
-export const DEFAULT_MODELS: Record<ProviderId, string> = {
+const SUPPORTED_PROVIDERS = getRuntimeSupportedProviders()
+
+/** Preferred default model ids when registry still exposes them; otherwise first model is used. */
+export const DEFAULT_MODELS: Partial<Record<ProviderId, string>> = {
   anthropic: "claude-sonnet-4-6",
   "github-copilot": "gpt-4o",
   "google-gemini-cli": "gemini-2.5-pro",
   openai: "gpt-4.1",
   opencode: "gpt-5.1-codex-mini",
+  "opencode-go": "glm-5",
   "openai-codex": "gpt-5.1-codex-mini",
 }
+
 const DEFAULT_GROUP_MODELS: Partial<Record<ProviderGroupId, string>> = {
-  // gpt-5-nano is not in the free-tier filter; use a known free id so defaults stay stable when display order changes.
   "opencode-free": "mimo-v2-omni-free",
 }
 
 export function getProviders(): Array<ProviderId> {
   return SUPPORTED_PROVIDERS
+}
+
+export function getPiAiModels(provider: ProviderId): ModelDefinition[] {
+  return getRegistryModels(provider) as ModelDefinition[]
+}
+
+export function getPiAiModel(
+  provider: ProviderId,
+  modelId: string
+): ModelDefinition | undefined {
+  return getRegistryModel(
+    provider as never,
+    modelId as never
+  ) as ModelDefinition | undefined
 }
 
 export function getProviderGroups(): Array<ProviderGroupId> {
@@ -192,13 +207,20 @@ export function getModelForGroup(
 }
 
 export function getDefaultModel(provider: ProviderId): ModelDefinition {
-  const defaultModel = getPiAiModel(provider, DEFAULT_MODELS[provider])
+  const preferredId = DEFAULT_MODELS[provider]
+  if (preferredId) {
+    const defaultModel = getPiAiModel(provider, preferredId)
+    if (defaultModel) {
+      return defaultModel
+    }
+  }
 
-  if (!defaultModel) {
+  const first = getPiAiModels(provider).at(0)
+  if (!first) {
     throw new Error(`Missing default model for provider: ${provider}`)
   }
 
-  return defaultModel
+  return first
 }
 
 export function hasModel(provider: ProviderId, modelId: string): boolean {
