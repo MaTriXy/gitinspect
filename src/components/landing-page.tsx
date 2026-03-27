@@ -41,10 +41,11 @@ const SUGGESTED_REPOS: ReadonlyArray<
   { owner: "Effect-TS", repo: "effect", ref: "main" },
   { owner: "rocicorp", repo: "mono", ref: "main" },
   { owner: "zml", repo: "zml", ref: "main" },
-  { owner: "anomalyco", repo: "opencode", ref: "main" },
+  { owner: "anomalyco", repo: "opencode", ref: "dev" },
   { owner: "durable-streams", repo: "durable-streams", ref: "main" },
   { owner: "rivet-dev", repo: "rivet", ref: "main" },
   { owner: "better-auth", repo: "better-auth", ref: "main" },
+  { owner: "RhysSullivan", repo: "executor", ref: "main" },
 ]
 
 function useSuggestedRepos(count: number) {
@@ -69,7 +70,7 @@ export function LandingPage() {
 
   return (
     <div className="flex h-full w-full flex-col items-center overflow-auto p-6 pt-[12vh]">
-      <div className="w-full max-w-xl space-y-8">
+      <div className="w-full max-w-xl flex-1 space-y-8">
         <div className="space-y-6 text-center">
           <h1 className="sr-only">gitinspect</h1>
           <ChatLogo size="hero" aria-hidden />
@@ -148,6 +149,23 @@ export function LandingPage() {
           </TabsContent>
         </Tabs>
       </div>
+
+      <footer className="mt-auto w-full max-w-xl shrink-0 pt-16 pb-8 text-center">
+        <p className="text-sm text-muted-foreground">
+          Made by{" "}
+          <a
+            className="underline underline-offset-2 decoration-muted-foreground/60 hover:text-foreground hover:decoration-foreground/60"
+            href="https://jeremyosih.com/"
+            rel="noopener noreferrer"
+            target="_blank"
+          >
+            Jeremy Osih
+          </a>
+        </p>
+        <p className="mt-2 max-w-md mx-auto text-[11px] leading-relaxed text-muted-foreground/70">
+          This page respects your privacy by not using cookies or similar technologies and not collecting personal information.
+        </p>
+      </footer>
     </div>
   )
 }
