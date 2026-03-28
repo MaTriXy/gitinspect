@@ -43,28 +43,27 @@ function collectToolResultsForAssistant(
   followingMessages: readonly ChatMessage[]
 ): Map<string, ToolResultMessage> {
   const toolCalls = getAssistantToolCalls(message)
-  const toolCallIds = new Set(toolCalls.map((toolCall) => toolCall.id))
   const toolResults = new Map<string, ToolResultMessage>()
 
-  if (toolCallIds.size === 0) {
+  if (toolCalls.length === 0) {
     return toolResults
   }
 
-  for (const nextMessage of followingMessages) {
-    if (nextMessage.role === "assistant") {
+  for (const next of followingMessages) {
+    if (next.role === "assistant") {
       break
     }
 
-    if (nextMessage.role === "system") {
+    if (next.role === "system") {
       continue
     }
 
-    if (
-      nextMessage.role === "toolResult" &&
-      toolCallIds.has(nextMessage.toolCallId) &&
-      !toolResults.has(nextMessage.toolCallId)
-    ) {
-      toolResults.set(nextMessage.toolCallId, nextMessage)
+    if (next.role !== "toolResult" || toolResults.has(next.toolCallId)) {
+      continue
+    }
+
+    if (next.parentAssistantId === message.id) {
+      toolResults.set(next.toolCallId, next)
     }
   }
 

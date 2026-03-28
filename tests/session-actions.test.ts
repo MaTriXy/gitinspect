@@ -47,7 +47,7 @@ function buildSession(
   id: string,
   overrides: Partial<SessionData> = {}
 ): SessionData {
-  return {
+  const session = {
     cost: 0,
     createdAt: "2026-03-23T12:00:00.000Z",
     error: undefined,
@@ -56,14 +56,19 @@ function buildSession(
     messageCount: 0,
     model: "gpt-5.1-codex-mini",
     preview: "",
-    provider: "openai-codex",
-    providerGroup: "openai-codex",
+    provider: "openai-codex" as SessionData["provider"],
+    providerGroup: "openai-codex" as SessionData["providerGroup"],
     repoSource: undefined,
-    thinkingLevel: "medium",
+    thinkingLevel: "medium" as SessionData["thinkingLevel"],
     title: "New chat",
     updatedAt: "2026-03-23T12:00:00.000Z",
     usage: createEmptyUsage(),
     ...overrides,
+  }
+
+  return {
+    ...session,
+    bootstrapStatus: session.bootstrapStatus ?? "ready",
   }
 }
 

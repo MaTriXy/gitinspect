@@ -1,26 +1,26 @@
 import * as React from "react"
-import { getRuntimeCommandErrorMessage } from "@/agent/runtime-command-errors"
 import { runtimeClient } from "@/agent/runtime-client"
+import { appendSessionNotice } from "@/sessions/session-notices"
 
 export function useRuntimeSession(sessionId: string | undefined) {
-  const [actionError, setActionError] = React.useState<string | undefined>(undefined)
-
   const runMutation = React.useEffectEvent(
     async (action: (currentSessionId: string) => Promise<void>) => {
       if (!sessionId) {
         return
       }
 
-      setActionError(undefined)
-
       try {
         await action(sessionId)
       } catch (error) {
-        setActionError(
-          getRuntimeCommandErrorMessage(
-            error instanceof Error ? error : undefined
-          )
-        )
+        try {
+          await appendSessionNotice(sessionId, error)
+        } catch (noticeError) {
+          console.error("[gitinspect:runtime] notice_persistence_failed", {
+            error,
+            noticeError,
+            sessionId,
+          })
+        }
       }
     }
   )
@@ -35,8 +35,6 @@ export function useRuntimeSession(sessionId: string | undefined) {
     if (!sessionId) {
       return
     }
-
-    setActionError(undefined)
     await runtimeClient.abort(sessionId)
   })
 
@@ -70,7 +68,6 @@ export function useRuntimeSession(sessionId: string | undefined) {
 
   return {
     abort,
-    error: actionError,
     send,
     setModelSelection,
     setThinkingLevel,

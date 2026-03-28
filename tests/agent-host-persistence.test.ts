@@ -10,14 +10,55 @@ import type { MessageRow, SessionData } from "@/types/storage"
 import { GitHubFsError } from "@/repo/github-fs"
 import { createEmptyUsage } from "@/types/models"
 
-const getSessionMessages = vi.fn(async (): Promise<Array<MessageRow>> => [])
-const putMessage = vi.fn(async (_message: MessageRow): Promise<void> => {})
-const putMessages = vi.fn(
-  async (_messages: Array<MessageRow>): Promise<void> => {}
+const state = {
+  messagesBySession: new Map<string, Array<MessageRow>>(),
+  sessions: new Map<string, SessionData>(),
+}
+
+function mergeSessionMessages(
+  sessionId: string,
+  messages: Array<MessageRow>
+): void {
+  const nextMessages = new Map<string, MessageRow>()
+
+  for (const message of state.messagesBySession.get(sessionId) ?? []) {
+    nextMessages.set(message.id, message)
+  }
+
+  for (const message of messages) {
+    nextMessages.set(message.id, message)
+  }
+
+  state.messagesBySession.set(
+    sessionId,
+    [...nextMessages.values()].sort(
+      (left, right) => left.timestamp - right.timestamp
+    )
+  )
+}
+
+const getSession = vi.fn(async (id: string): Promise<SessionData | undefined> =>
+  state.sessions.get(id)
 )
-const putSession = vi.fn(async (_session: SessionData): Promise<void> => {})
+const getSessionMessages = vi.fn(async (sessionId: string): Promise<Array<MessageRow>> =>
+  state.messagesBySession.get(sessionId) ?? []
+)
+const putMessage = vi.fn(async (message: MessageRow): Promise<void> => {
+  mergeSessionMessages(message.sessionId, [message])
+})
+const putMessages = vi.fn(async (messages: Array<MessageRow>): Promise<void> => {
+  for (const message of messages) {
+    mergeSessionMessages(message.sessionId, [message])
+  }
+})
+const putSession = vi.fn(async (session: SessionData): Promise<void> => {
+  state.sessions.set(session.id, session)
+})
 const putSessionAndMessages = vi.fn(
-  async (_session: SessionData, _messages: Array<MessageRow>): Promise<void> => {}
+  async (session: SessionData, messages: Array<MessageRow>): Promise<void> => {
+    state.sessions.set(session.id, session)
+    mergeSessionMessages(session.id, messages)
+  }
 )
 const recordUsage = vi.fn(
   async (
@@ -88,6 +129,7 @@ const setThinkingLevelMock = vi.fn(
 const setToolsMock = vi.fn((_tools: Array<AgentTool>): void => {})
 
 vi.mock("@/db/schema", () => ({
+  getSession,
   getSessionMessages,
   putMessage,
   putMessages,
@@ -120,6 +162,7 @@ vi.mock("@mariozechner/pi-agent-core", () => ({
 
 function createSession(): SessionData {
   return {
+    bootstrapStatus: "ready",
     cost: 0,
     createdAt: "2026-03-24T12:00:00.000Z",
     error: undefined,
@@ -166,6 +209,7 @@ function createToolResultMessage(
     toolCallId: "call-1",
     toolName: "read",
     ...overrides,
+    parentAssistantId: overrides.parentAssistantId ?? "assistant-1",
   }
 }
 
@@ -189,8 +233,10 @@ function getPersistedSystemRows(): Array<
 
 describe("AgentHost persistence", () => {
   beforeEach(() => {
+    state.messagesBySession = new Map()
+    state.sessions = new Map()
+    getSession.mockReset()
     getSessionMessages.mockReset()
-    getSessionMessages.mockResolvedValue([])
     putMessage.mockClear()
     putMessages.mockClear()
     putSession.mockClear()
@@ -201,6 +247,11 @@ describe("AgentHost persistence", () => {
     setModelMock.mockClear()
     setThinkingLevelMock.mockClear()
     setToolsMock.mockClear()
+
+    getSession.mockImplementation(async (id: string) => state.sessions.get(id))
+    getSessionMessages.mockImplementation(async (sessionId: string) =>
+      state.messagesBySession.get(sessionId) ?? []
+    )
 
     agentState.error = undefined
     agentState.isStreaming = false
@@ -465,7 +516,7 @@ describe("AgentHost persistence", () => {
     host.dispose()
   })
 
-  it("persists an errored assistant row and session error when prompt throws", async () => {
+  it("persists an errored assistant row and system notice when prompt throws", async () => {
     const { AgentHost } = await import("@/agent/agent-host")
     const host = new AgentHost(createSession(), [])
 
@@ -473,9 +524,40 @@ describe("AgentHost persistence", () => {
 
     await host.prompt("hello")
 
-    expect(putSessionAndMessages).toHaveBeenCalledWith(
+    expect(putSessionAndMessages).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({ bootstrapStatus: "ready", isStreaming: true }),
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: expect.any(String),
+          role: "assistant",
+          sessionId: "session-1",
+          status: "streaming",
+        }),
+      ])
+    )
+
+    expect(putSessionAndMessages).toHaveBeenNthCalledWith(
+      2,
       expect.objectContaining({
-        error: "Prompt failed",
+        bootstrapStatus: "ready",
+        error: undefined,
+        isStreaming: true,
+      }),
+      expect.arrayContaining([
+        expect.objectContaining({
+          role: "system",
+          sessionId: "session-1",
+          fingerprint: "unknown:Prompt failed",
+        }),
+      ])
+    )
+
+    expect(putSessionAndMessages).toHaveBeenNthCalledWith(
+      3,
+      expect.objectContaining({
+        bootstrapStatus: "ready",
+        error: undefined,
         isStreaming: false,
       }),
       expect.arrayContaining([
@@ -483,16 +565,6 @@ describe("AgentHost persistence", () => {
           role: "assistant",
           sessionId: "session-1",
           status: "error",
-        }),
-      ])
-    )
-
-    expect(putSessionAndMessages).toHaveBeenCalledWith(
-      expect.any(Object),
-      expect.arrayContaining([
-        expect.objectContaining({
-          role: "system",
-          sessionId: "session-1",
         }),
       ])
     )

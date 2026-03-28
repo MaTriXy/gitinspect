@@ -49,9 +49,9 @@ export async function touchRepository(
 ): Promise<void> {
   const owner = source.owner.trim()
   const repo = source.repo.trim()
-  const ref = source.ref.trim() || "main"
+  const ref = source.ref.trim()
 
-  if (!owner || !repo) {
+  if (!owner || !repo || !ref) {
     return
   }
 

@@ -9,10 +9,19 @@ import type {
 
 export interface RepoSource {
   owner: string
-  ref: string
   repo: string
+  ref: string
   token?: string
 }
+
+export interface RepoTarget {
+  owner: string
+  repo: string
+  ref?: string
+  token?: string
+}
+
+export type BootstrapStatus = "bootstrap" | "failed" | "ready"
 
 export interface RepositoryRow {
   lastOpenedAt: string
@@ -25,6 +34,7 @@ export interface SessionData {
   cost: number
   createdAt: string
   error?: string
+  bootstrapStatus: BootstrapStatus
   id: string
   isStreaming: boolean
   messageCount: number

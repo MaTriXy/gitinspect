@@ -2,13 +2,13 @@ import * as React from "react"
 import { useNavigate } from "@tanstack/react-router"
 import { useLiveQuery } from "dexie-react-hooks"
 import { toast } from "sonner"
+import type { RepoSource } from "@/types/storage"
 import { Icons } from "@/components/icons"
 import { listRepositories } from "@/db/schema"
 import { githubApiFetch, isRateLimitError, showRateLimitToast } from "@/repo/github-fetch"
 import { parseRepoQuery } from "@/repo/parse"
 import { buildRepoPathname, githubOwnerAvatarUrl } from "@/repo/url"
 import { cn } from "@/lib/utils"
-import type { RepoSource } from "@/types/storage"
 
 export type RepoComboboxHandle = {
   focusAndClear: () => void
@@ -25,7 +25,7 @@ type Mode = "display" | "edit"
 export const RepoCombobox = React.forwardRef<
   RepoComboboxHandle,
   RepoComboboxProps
->(function RepoCombobox({ autoFocus = false, className, repoSource }, ref) {
+>(function RepoComboboxInner({ autoFocus = false, className, repoSource }, ref) {
   const navigate = useNavigate()
   const repositories = useLiveQuery(async () => await listRepositories(), [])
   const [mode, setMode] = React.useState<Mode>(
@@ -91,7 +91,7 @@ export const RepoCombobox = React.forwardRef<
 
   const handleSubmit = React.useCallback(async () => {
     if (highlightedIndex >= 0 && highlightedIndex < filteredRepos.length) {
-      const item = filteredRepos[highlightedIndex]!
+      const item = filteredRepos[highlightedIndex]
       handleSelect(item.owner, item.repo, item.ref)
       return
     }
@@ -111,13 +111,17 @@ export const RepoCombobox = React.forwardRef<
         toast.error(`Repository ${parsed.owner}/${parsed.repo} not found`)
         return
       }
+      const payload = (await res.json()) as { default_branch?: string }
+      const resolvedRef =
+        parsed.ref?.trim() || payload.default_branch?.trim()
+
+      if (!resolvedRef) {
+        toast.error(`Could not determine the default branch for ${parsed.owner}/${parsed.repo}`)
+        return
+      }
       setQuery("")
       setMode("display")
-      navigateToRepo(
-        parsed.owner,
-        parsed.repo,
-        parsed.ref && parsed.ref !== "main" ? parsed.ref : undefined
-      )
+      navigateToRepo(parsed.owner, parsed.repo, resolvedRef)
     } catch (err) {
       if (isRateLimitError(err)) {
         showRateLimitToast()

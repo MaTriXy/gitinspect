@@ -1,5 +1,7 @@
 "use client"
 
+import { useTheme } from "next-themes"
+
 import { Icons } from "@/components/icons"
 import { Button } from "@/components/ui/button"
 import {
@@ -7,7 +9,6 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip"
-import { useTheme } from "next-themes"
 
 export function ThemeToggle() {
   const { setTheme, theme } = useTheme()
@@ -16,7 +17,7 @@ export function ThemeToggle() {
     <Tooltip>
       <TooltipTrigger asChild>
         <Button
-          aria-label="Toggle theme"
+          aria-label="Toggle Theme"
           className="relative"
           variant="ghost"
           size="icon"
@@ -26,10 +27,10 @@ export function ThemeToggle() {
         >
           <Icons.sun className="rotate-0 scale-100 text-foreground transition-all dark:-rotate-90 dark:scale-0" />
           <Icons.moon className="absolute rotate-90 scale-0 text-foreground transition-all dark:rotate-0 dark:scale-100" />
-          <span className="sr-only">Toggle theme</span>
+          <span className="sr-only">Toggle Theme</span>
         </Button>
       </TooltipTrigger>
-      <TooltipContent sideOffset={6}>Toggle theme</TooltipContent>
+      <TooltipContent sideOffset={6}>Toggle Theme</TooltipContent>
     </Tooltip>
   )
 }

@@ -1,4 +1,4 @@
-import type { RepoSource } from "@/types/storage"
+import type { RepoTarget } from "@/types/storage"
 
 /** Top-level app paths that are not owner/repo routes */
 const RESERVED_ROOT_SEGMENTS = new Set([
@@ -181,14 +181,14 @@ export function githubOwnerAvatarUrl(owner: string): string {
 }
 
 /**
- * Convert a parsed path + defaults into a RepoSource (no token).
+ * Convert a parsed path into a repo target (no token, ref optional).
  */
 export function parsedPathToRepoSource(
   parsed: ParsedRepoPath
-): Pick<RepoSource, "owner" | "ref" | "repo"> {
+): RepoTarget {
   return {
     owner: parsed.owner,
-    ref: parsed.ref ?? "main",
+    ref: parsed.ref,
     repo: parsed.repo,
   }
 }

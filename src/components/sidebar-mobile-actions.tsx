@@ -8,8 +8,10 @@ import {
   SidebarMenuButton,
   SidebarMenuItem,
 } from "@/components/ui/sidebar"
+import { Skeleton } from "@/components/ui/skeleton"
 import { useCurrentRouteTarget } from "@/hooks/use-current-route-target"
-import { useSelectedSessionSummary } from "@/hooks/use-selected-session-summary"
+import { GITHUB_APP_REPO, useGitHubRepoStargazers } from "@/hooks/use-github-repo-stargazers"
+import { formatGitHubStarCount } from "@/lib/format-github-stars"
 
 /** Mobile sidebar only: links and actions that are hidden from the header on small screens. Renders under the Home link. */
 export function SidebarMobileActions() {
@@ -23,7 +25,6 @@ export function SidebarMobileActions() {
     typeof search.initialQuery === "string" ? search.initialQuery : undefined
   const sessionId =
     typeof search.session === "string" ? search.session : undefined
-  const selectedSession = useSelectedSessionSummary(sessionId)
 
   const openSettings = () => {
     if (currentRouteTarget.to === "/") {
@@ -60,16 +61,7 @@ export function SidebarMobileActions() {
           </SidebarMenuButton>
         </SidebarMenuItem>
         <SidebarMenuItem>
-          <SidebarMenuButton asChild className="h-9">
-            <a
-              href="https://github.com/jeremyosih/gitinspect"
-              rel="noreferrer"
-              target="_blank"
-            >
-              <Icons.gitHub className="text-sidebar-foreground" />
-              <span>GitHub</span>
-            </a>
-          </SidebarMenuButton>
+          <MobileGitHubRow />
         </SidebarMenuItem>
         <SidebarMenuItem>
           <SidebarMenuButton
@@ -82,20 +74,45 @@ export function SidebarMobileActions() {
               <Icons.sun className="size-4 rotate-0 scale-100 text-sidebar-foreground transition-all dark:-rotate-90 dark:scale-0" />
               <Icons.moon className="absolute size-4 rotate-90 scale-0 text-sidebar-foreground transition-all dark:rotate-0 dark:scale-100" />
             </span>
-            <span className="truncate">Toggle theme</span>
+            <span className="truncate">Toggle Theme</span>
           </SidebarMenuButton>
         </SidebarMenuItem>
         <SidebarMenuItem>
-          <SidebarMenuButton
-            className="h-9"
-            disabled={selectedSession?.isStreaming ?? false}
-            onClick={openSettings}
-          >
+          <SidebarMenuButton className="h-9" onClick={openSettings}>
             <Icons.cog className="text-sidebar-foreground" />
             <span>Settings</span>
           </SidebarMenuButton>
         </SidebarMenuItem>
       </SidebarMenu>
     </div>
+  )
+}
+
+function MobileGitHubRow() {
+  const { owner, repo } = GITHUB_APP_REPO
+  const state = useGitHubRepoStargazers(owner, repo)
+
+  return (
+    <SidebarMenuButton asChild className="h-9 gap-1.5">
+      <a
+        href={`https://github.com/${owner}/${repo}`}
+        rel="noreferrer"
+        target="_blank"
+      >
+        <Icons.gitHub className="text-sidebar-foreground" />
+        <span>GitHub</span>
+        {state.status === "loading" ? (
+          <Skeleton className="ml-auto h-4 w-8 shrink-0" />
+        ) : state.status === "error" ? (
+          <span className="ml-auto text-xs text-sidebar-foreground/70 tabular-nums">
+            —
+          </span>
+        ) : (
+          <span className="ml-auto text-xs text-sidebar-foreground/80 tabular-nums">
+            {formatGitHubStarCount(state.count)}
+          </span>
+        )}
+      </a>
+    </SidebarMenuButton>
   )
 }

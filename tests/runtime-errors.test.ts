@@ -1,45 +1,58 @@
 import { describe, expect, it } from "vitest"
 import { GitHubFsError } from "@/repo/github-fs"
-import { classifyRuntimeError } from "@/agent/runtime-errors"
+import {
+  BootstrapFailedRuntimeError,
+  BusyRuntimeError,
+  MissingSessionRuntimeError,
+  StreamInterruptedRuntimeError,
+} from "@/agent/runtime-command-errors"
+import { buildSystemMessage, classifyRuntimeError } from "@/agent/runtime-errors"
 
 describe("classifyRuntimeError", () => {
-  it("detects GitHub rate limit from GitHubFsError message", () => {
-    const err = new GitHubFsError(
-      "EACCES",
-      "GitHub API rate limit exceeded (resets at 3:00:00 PM): /",
-      "/"
+  it("detects bootstrap failures", () => {
+    const classified = classifyRuntimeError(
+      new BootstrapFailedRuntimeError("Bootstrap failed")
     )
-    const c = classifyRuntimeError(err)
-    expect(c.kind).toBe("github_rate_limit")
-    expect(c.action).toBe("open-github-settings")
-    expect(c.severity).toBe("error")
+
+    expect(classified.kind).toBe("bootstrap_failed")
+    expect(classified.severity).toBe("error")
+    expect(classified.source).toBe("runtime")
   })
 
-  it("detects provider connection failures", () => {
-    const c = classifyRuntimeError(new Error("Connection error."))
-    expect(c.kind).toBe("provider_connection")
-    expect(c.source).toBe("provider")
+  it("detects busy runtime errors", () => {
+    const classified = classifyRuntimeError(new BusyRuntimeError("session-1"))
+
+    expect(classified.kind).toBe("runtime_busy")
+    expect(classified.severity).toBe("warning")
+    expect(classified.source).toBe("runtime")
   })
 
-  it("detects GitHub auth failures", () => {
-    const err = new GitHubFsError("EACCES", "Authentication required", "/")
-    const c = classifyRuntimeError(err)
-    expect(c.kind).toBe("github_auth")
-    expect(c.action).toBe("open-github-settings")
-    expect(c.source).toBe("github")
+  it("detects missing session errors", () => {
+    const classified = classifyRuntimeError(
+      new MissingSessionRuntimeError("session-1")
+    )
+
+    expect(classified.kind).toBe("missing_session")
+    expect(classified.severity).toBe("error")
+    expect(classified.source).toBe("runtime")
   })
 
-  it("detects GitHub not found failures", () => {
-    const err = new GitHubFsError("ENOENT", "README.md not found", "/README.md")
-    const c = classifyRuntimeError(err)
-    expect(c.kind).toBe("github_not_found")
-    expect(c.severity).toBe("warning")
-    expect(c.source).toBe("github")
+  it("detects stream interruptions", () => {
+    const classified = classifyRuntimeError(new StreamInterruptedRuntimeError())
+
+    expect(classified.kind).toBe("stream_interrupted")
+    expect(classified.severity).toBe("error")
+    expect(classified.source).toBe("runtime")
   })
 
-  it("distinguishes repository network failures from provider failures", () => {
-    const c = classifyRuntimeError(new Error("Failed to fetch repository tree"))
-    expect(c.kind).toBe("repo_network")
-    expect(c.source).toBe("github")
+  it("preserves fingerprints in persisted system messages", () => {
+    const classified = classifyRuntimeError(
+      new GitHubFsError("ENOENT", "README.md not found", "/README.md")
+    )
+    const message = buildSystemMessage(classified, "system-1", 123)
+
+    expect(message.fingerprint).toBe(classified.fingerprint)
+    expect(message.role).toBe("system")
+    expect(message.kind).toBe(classified.kind)
   })
 })

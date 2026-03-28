@@ -40,7 +40,7 @@ export function useCurrentRouteTarget():
     case "/$owner/$repo/$":
       return {
         params: {
-          _splat: match.params._splat ?? "main",
+          _splat: match.params._splat ?? "",
           owner: match.params.owner,
           repo: match.params.repo,
         },

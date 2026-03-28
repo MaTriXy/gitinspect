@@ -31,6 +31,11 @@ export interface TextShimmerProps {
   spread?: number;
 }
 
+export interface StatusShimmerProps
+  extends Omit<TextShimmerProps, "children" | "as"> {
+  children: string;
+}
+
 const ShimmerComponent = ({
   children,
   as: Component = "p",
@@ -75,3 +80,21 @@ const ShimmerComponent = ({
 };
 
 export const Shimmer = memo(ShimmerComponent);
+
+export const StatusShimmer = memo(
+  ({ children, className, duration, spread }: StatusShimmerProps) => (
+    <div
+      aria-live="polite"
+      className={cn(
+        "inline-flex items-center gap-2 rounded-md border border-border/60 bg-muted/30 px-3 py-2 text-sm text-muted-foreground",
+        className
+      )}
+      role="status"
+    >
+      <span className="size-2 animate-pulse rounded-full bg-current" />
+      <Shimmer as="span" className="text-current" duration={duration} spread={spread}>
+        {children}
+      </Shimmer>
+    </div>
+  )
+);

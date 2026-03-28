@@ -44,7 +44,6 @@ const THINKING_LEVELS: Array<{ label: string; value: ThinkingLevel }> = [
 ]
 
 function ChatComposerInner(props: {
-  error?: string
   isStreaming: boolean
   model: string
   onAbort: () => void
@@ -73,11 +72,7 @@ function ChatComposerInner(props: {
     [props.isStreaming, props.onSend]
   )
 
-  const submitStatus: ChatStatus = props.error
-    ? "error"
-    : props.isStreaming
-      ? "streaming"
-      : "ready"
+  const submitStatus: ChatStatus = props.isStreaming ? "streaming" : "ready"
 
   const currentModel = getModelForGroup(props.providerGroup, props.model)
   const supportsThinking = currentModel.reasoning === true
@@ -152,10 +147,6 @@ function ChatComposerInner(props: {
           />
         </PromptInputFooter>
       </PromptInput>
-
-      {props.error ? (
-        <div className="text-xs text-destructive">{props.error}</div>
-      ) : null}
     </div>
   )
 }
@@ -184,7 +175,6 @@ function PromptInputAttachmentsRow() {
 }
 
 export function ChatComposer(props: {
-  error?: string
   initialInput?: string
   isStreaming: boolean
   model: string

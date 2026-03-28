@@ -106,6 +106,7 @@ describe("chat-adapter", () => {
       details: undefined,
       id: "tr1",
       isError: false,
+      parentAssistantId: "a1",
       role: "toolResult",
       timestamp: 0,
       toolCallId: "t1",

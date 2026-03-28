@@ -1,8 +1,6 @@
 import * as React from "react"
 import { useNavigate, useRouterState, useSearch } from "@tanstack/react-router"
-import { CopyIcon } from "lucide-react"
-import { toast } from "sonner"
-import type { RepoSource } from "@/types/storage"
+import type { RepoTarget } from "@/types/storage"
 import { Button } from "@/components/ui/button"
 import { Separator } from "@/components/ui/separator"
 import {
@@ -25,9 +23,7 @@ import {
 import { githubOwnerAvatarUrl } from "@/repo/url"
 import { useCurrentRouteTarget } from "@/hooks/use-current-route-target"
 import { useSelectedSessionSummary } from "@/hooks/use-selected-session-summary"
-import { conversationToMarkdown } from "@/lib/export-markdown"
 import { cn } from "@/lib/utils"
-import { loadSessionWithMessages } from "@/sessions/session-service"
 
 function SquareOwnerAvatar({ owner }: { owner: string }) {
   const [failed, setFailed] = React.useState(false)
@@ -69,7 +65,7 @@ function HeaderTooltip({
   )
 }
 
-function getRepoSourceFromPathname(pathname: string): RepoSource | undefined {
+function getRepoSourceFromPathname(pathname: string): RepoTarget | undefined {
   const segments = pathname.split("/").filter(Boolean)
 
   if (
@@ -90,7 +86,7 @@ function getRepoSourceFromPathname(pathname: string): RepoSource | undefined {
 
   const ref = refSegments.length > 0
     ? decodeURIComponent(refSegments.join("/"))
-    : "main"
+    : undefined
 
   return {
     owner,
@@ -189,41 +185,11 @@ export function AppHeader() {
         <GitHubLink />
         <Separator className="!h-6 !self-center" orientation="vertical" />
         <ThemeToggle />
-        {sessionId ? (
-          <>
-            <Separator className="!h-6 !self-center" orientation="vertical" />
-            <HeaderTooltip label="Copy as markdown">
-              <Button
-                aria-label="Copy as markdown"
-                className="h-8 shadow-none"
-                onClick={async () => {
-                  if (!sessionId) return
-                  const loaded = await loadSessionWithMessages(sessionId)
-                  if (!loaded || loaded.messages.length === 0) {
-                    toast.error("No messages to copy")
-                    return
-                  }
-                  const md = conversationToMarkdown(
-                    loaded.messages,
-                    loaded.session.repoSource
-                  )
-                  await navigator.clipboard.writeText(md)
-                  toast.success("Conversation copied as markdown")
-                }}
-                size="icon-sm"
-                variant="ghost"
-              >
-                <CopyIcon className="size-4 text-foreground" />
-              </Button>
-            </HeaderTooltip>
-          </>
-        ) : null}
         <Separator className="!h-6 !self-center" orientation="vertical" />
         <HeaderTooltip label="Open settings">
           <Button
             aria-label="Open settings"
             className="h-8 shadow-none"
-            disabled={selectedSession?.isStreaming ?? false}
             onClick={() => {
               if (currentRouteTarget.to === "/") {
                 void navigate({

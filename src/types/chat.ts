@@ -27,7 +27,10 @@ export type UserMessage = PiUserMessage & { id: string }
 
 export type AssistantMessage = PiAssistantMessage & { id: string }
 
-export type ToolResultMessage = PiToolResultMessage & { id: string }
+export type ToolResultMessage = PiToolResultMessage & {
+  id: string
+  parentAssistantId: string
+}
 
 /** Local-only transcript row: not sent to the LLM (filtered in session-adapter). */
 export type SystemNoticeSeverity = "error" | "warning" | "info"
@@ -43,6 +46,7 @@ export interface SystemMessage {
   severity: SystemNoticeSeverity
   source: "github" | "provider" | "runtime"
   message: string
+  fingerprint: string
   action?: SystemNoticeAction
 }
 

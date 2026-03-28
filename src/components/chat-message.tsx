@@ -23,6 +23,7 @@ import {
   ReasoningContent,
   ReasoningTrigger,
 } from "@/components/ai-elements/reasoning"
+import { StatusShimmer } from "@/components/ai-elements/shimmer"
 import {
   Source,
   Sources,
@@ -147,10 +148,23 @@ export function ChatMessage(props: {
   }
 
   const view = deriveAssistantView(message, props.followingMessages)
+  const isStreamingAssistant =
+    "status" in message && message.status === "streaming"
+  const showStreamingPlaceholder =
+    isStreamingAssistant &&
+    view.text.length === 0 &&
+    view.reasoning.length === 0 &&
+    view.toolExecutions.length === 0
 
   return (
     <Message from="assistant">
       <div className="flex w-full flex-col gap-2">
+        {showStreamingPlaceholder ? (
+          <MessageContent>
+            <StatusShimmer duration={1.5}>Assistant is streaming...</StatusShimmer>
+          </MessageContent>
+        ) : null}
+
         {view.sources.length > 0 ? (
           <Sources>
             <SourcesTrigger count={view.sources.length} />

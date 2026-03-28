@@ -1,836 +1,792 @@
 # Agent Runtime Research
 
-Date: 2026-03-26
+Date: 2026-03-27
 
 Scope:
 - `src/agent/*`
-- runtime call sites in `src/components/chat.tsx`, `src/hooks/use-runtime-session.ts`, `src/sessions/session-actions.ts`
-- Sitegeist reference in `docs/sitegeist/src/sidepanel.ts`, `docs/sitegeist/src/messages/message-transformer.ts`, `docs/sitegeist/src/storage/*`, `docs/sitegeist/docs/*`
-
-Method:
-- read current runtime code end-to-end
-- read Sitegeist runtime/storage/proxy code end-to-end
-- grep imports/usages to find stale surfaces
-- run focused tests:
+- runtime call sites in `src/components/chat.tsx`, `src/hooks/use-runtime-session.ts`, `src/sessions/session-actions.ts`, `src/sessions/session-service.ts`
+- runtime persistence in `src/db/schema.ts`
+- focused tests:
 
 ```sh
-bun run test -- tests/provider-stream.test.ts tests/message-transformer.test.ts tests/runtime-audit.test.ts tests/agent-host-persistence.test.ts
+bun run test tests/runtime-client.test.ts tests/agent-host-persistence.test.ts
 ```
 
-Result: 9/9 tests passed.
+Result:
+- `24/24` tests passed across `tests/runtime-client.test.ts` and `tests/agent-host-persistence.test.ts`
 
 ---
 
 ## TL;DR
 
-Short version:
+The current architecture is not "one global SharedWorker."
 
-- current runtime is **not just overengineered for no reason**
-- biggest justified difference vs Sitegeist: **worker-hosted per-session runtime + Dexie-driven UI reactivity**
-- biggest accidental complexity: **too much logic collapsed into `AgentHost` + repeated wrapper layers around it**
-- biggest clear dead/stale surfaces:
-  - `src/agent/runtime.ts`
-  - `src/agent/live-runtime.ts`
-  - `toOpenAIChatMessages()` in `src/agent/message-transformer.ts`
-  - `toAnthropicMessages()` in `src/agent/message-transformer.ts`
-  - `setRepoSource()` path appears unused end-to-end
-  - `WorkerMode` / returned `mode` in `src/agent/runtime-client.ts`
+It is effectively:
 
-Net:
+- one worker handle per session id in the UI client
+- one worker instance per session id in browsers that support `SharedWorker`
+- one `AgentHost` per worker instance
+- Dexie as the source of truth
+- worker memory as a warm runtime cache
 
-- architecture direction mostly correct
-- implementation can be simplified materially
-- main target: split persistence/orchestration from `AgentHost`, collapse wrapper boilerplate, delete stale seams
+That means the system already behaves like "one runtime per conversation/session," not "one runtime for the whole app."
+
+The important consequences:
+
+1. `SharedWorker` support does **not** mean there is one giant background agent process.
+2. The worker currently holds exactly one `host` and one `activeSessionId`, so the worker API is single-session by design.
+3. Different session ids produce different worker instances.
+4. The runtime is rehydratable because the authoritative state is persisted in Dexie.
+5. The brittle part is not mainly SharedWorker itself. The brittle part is the **bootstrap lifecycle** for the first send:
+   - create session
+   - navigate
+   - init worker
+   - persist optimistic rows
+   - stream
+   - recover if something fails before the prompt is durably established
+
+That bootstrap path is modeled today through side effects and heuristics, not an explicit state machine.
+
+Your `bootstrapStatus` idea is correct. It matches the actual failure boundary in this codebase.
 
 ---
 
-## 1. How current runtime works
+## 1. What Each File In `src/agent/` Does
 
-### 1.1 Actual flow
+### `agent-host.ts`
 
-Current app flow:
+This is the real runtime core.
 
-1. UI loads session from Dexie via `useLiveQuery`
-2. UI sends mutation through `runtimeClient`
-3. `runtimeClient` connects to `SharedWorker` if supported, else `Worker`
-4. worker exports registry methods from `SessionRuntimeRegistry`
-5. registry lazily loads session + messages from Dexie and creates one `AgentHost` per session
-6. `AgentHost` owns the real `Agent`, tool injection, persistence, cost aggregation, and local system notices
-7. UI updates because Dexie rows change, not because UI subscribes to the `Agent` directly
-
-Code path:
-
-- UI send: `src/components/chat.tsx:281-290`
-- UI runtime hook: `src/hooks/use-runtime-session.ts:18-117`
-- client worker bridge: `src/agent/runtime-client.ts:40-145`
-- worker exports: `src/agent/runtime-worker.ts:1-16`
-- session host registry: `src/agent/session-runtime-registry.ts:10-239`
-- host: `src/agent/agent-host.ts:42-637`
-
-Key snippet:
-
-```ts
-// src/components/chat.tsx:281-289
-const handleSend = React.useCallback(
-  async (content: string) => {
-    if (activeSession) {
-      await runtime.send(content)
-      return
-    }
-
-    await handleFirstSend(content)
-  },
-  [activeSession, handleFirstSend, runtime]
-)
-```
-
-```ts
-// src/agent/runtime-client.ts:19-37
-if (sharedWorkerSupported) {
-  const worker = new SharedWorker(
-    new URL("./runtime-worker", import.meta.url),
-    { name: "gitinspect-runtime", type: "module" }
-  )
-  return { api: wrap<RuntimeWorkerApi>(worker.port), mode: "shared" }
-}
-
-const worker = new Worker(
-  new URL("./runtime-worker", import.meta.url),
-  { name: "gitinspect-runtime", type: "module" }
-)
-return { api: wrap<RuntimeWorkerApi>(worker), mode: "dedicated" }
-```
-
-This is a real architectural difference from Sitegeist. It matters.
-
-### 1.2 What `AgentHost` really owns
-
-`AgentHost` is not a thin adapter. It owns:
+It owns:
 
 - `Agent` construction
-- model/auth resolution
+- model selection updates
+- thinking level updates
 - repo tool injection
-- optimistic user row + streaming assistant placeholder persistence
-- partial tool-result persistence during stream
-- final session metadata derivation
-- daily cost recording
-- runtime error classification -> local system message append
-- stream lifecycle cleanup / safety net
+- prompt bootstrap persistence
+- stream lifecycle persistence
+- system/runtime notices
+- usage recording
+- abort/dispose behavior
 
-Evidence:
+This file is where most hidden coupling lives.
 
-- construct agent: `src/agent/agent-host.ts:75-102`
-- prompt optimistic persistence: `src/agent/agent-host.ts:108-223`
-- model/thinking/repo mutations: `src/agent/agent-host.ts:230-294`
-- event-driven persistence: `src/agent/agent-host.ts:397-538`
-- system notices: `src/agent/agent-host.ts:599-636`
+Key points:
 
-Size:
+- `prompt()` creates optimistic user + assistant rows before calling the model
+- `handleEvent()` persists stream updates and final boundaries
+- `createRuntime()` creates repo tools only when the session has a repo source
+- `dispose()` stops further persistence and aborts the stream
 
-```txt
-637 src/agent/agent-host.ts
-239 src/agent/session-runtime-registry.ts
-145 src/agent/runtime-client.ts
-530 src/agent/provider-stream.ts
-```
+Primary code:
+- `src/agent/agent-host.ts`
 
-`AgentHost` is the main complexity center.
+### `session-persistence.ts`
 
----
+This is the durable-state adapter between `AgentHost` and Dexie.
 
-## 2. How Sitegeist does it
+It is responsible for:
 
-Sitegeist keeps the runtime much flatter:
+- assigning stable persisted assistant ids
+- writing optimistic rows at prompt start
+- incrementally persisting stream progress
+- writing final session/message state
+- recording usage once
+- appending local system messages
 
-- one sidepanel page owns one in-memory `Agent`
-- sidepanel subscribes directly to `agent.subscribe(...)`
-- session persistence happens from that subscription
-- multi-window coordination is done with window-scoped locks in background worker, not with a shared runtime worker
+Important detail:
 
-Evidence:
+- `persistPromptStart()` is the real durability threshold for "the first prompt exists as a real conversation event"
 
-- create agent: `docs/sitegeist/src/sidepanel.ts:329-403`
-- persist on subscribe: `docs/sitegeist/src/sidepanel.ts:407-457`
-- save session body: `docs/sitegeist/src/sidepanel.ts:244-321`
-- multi-window lock design: `docs/sitegeist/docs/multi-window.md:1-213`
-- background lock manager: `docs/sitegeist/src/background.ts:29-166`
+That is the exact seam where a `bootstrap -> ready` promotion belongs.
 
-Key Sitegeist snippet:
+Primary code:
+- `src/agent/session-persistence.ts`
 
-```ts
-// docs/sitegeist/src/sidepanel.ts:381-403
-agent = new Agent({
-  initialState: initialState || {
-    systemPrompt: SYSTEM_PROMPT,
-    model: defaultModel,
-    thinkingLevel: "medium",
-    messages: [],
-    tools: [],
-  },
-  convertToLlm: browserMessageTransformer,
-  toolExecution: "sequential",
-  streamFn: createStreamFn(async () => { ... }),
-  getApiKey: async (provider: string) => { ... },
-});
-```
+### `runtime-client.ts`
 
-```ts
-// docs/sitegeist/src/sidepanel.ts:407-457
-agentUnsubscribe = agent.subscribe((event: AgentEvent) => {
-  ...
-  if (currentSessionId) {
-    saveSession();
-  }
-  renderApp();
-});
-```
+This is the browser-side worker manager.
 
-That is simpler. But also solves a different problem.
+It does:
 
----
+- choose `SharedWorker` if available
+- fall back to `Worker` if unavailable or construction throws
+- cache worker handles by `sessionId`
+- call `init(sessionId)` before first mutation
+- expose high-level methods like `send`, `abort`, `setModelSelection`, `releaseSession`
 
-## 3. What is simpler here than Sitegeist
+Important detail:
 
-Important: not all current complexity is bloat. Some parts are already much simpler than Sitegeist.
+- the worker name is `gitinspect-session-${sessionId}`
+- that means the worker namespace is per session id, not global
 
-### 3.1 Message transformer is dramatically smaller in scope
-
-Sitegeist transformer:
-
-- filters UI-only roles
-- turns navigation events into injected user messages
-- injects skills text
-- reorders tool results
-
-See `docs/sitegeist/src/messages/message-transformer.ts:75-123`.
-
-Current transformer:
-
-- keep only LLM-compatible roles
-- reorder tool results after assistant tool calls
-
-See `src/agent/message-transformer.ts:113-115`.
-
-Current snippet:
-
-```ts
-export function webMessageTransformer(messages: AgentMessage[]): Message[] {
-  return reorderMessages(messages.filter(isLlmMessage))
-}
-```
-
-This is good. No browser-context injection. No nav messages. No extension-only junk. Matches `SPEC.md:106-112`.
-
-### 3.2 Tool surface is much smaller
-
-Sitegeist tool factory wires:
-
-- navigate
-- ask_user_which_element
-- repl
-- skill
-- extract_document
-- extract_image
-- optional debugger
-
-See `docs/sitegeist/src/sidepanel.ts:518-565`.
-
-Current app only injects repo tools when a repo session exists:
-
-- `read`
-- `bash`
-
-See `src/tools/index.ts:6-23`.
-
-This is aligned with v0.
-
-### 3.3 UI/runtime boundary is cleaner
-
-Sitegeist UI directly owns the live `Agent`.
-
-Current app UI only:
-
-- reads Dexie
-- sends mutations
-
-This is cleaner for reload/resume. It is a real improvement, not bloat.
-
-Evidence:
-
-- UI reads Dexie: `src/components/chat.tsx:102-127`
-- UI does not own `Agent`: no `new Agent(...)` outside `AgentHost`
-
----
-
-## 4. What is more complex here than Sitegeist
-
-### 4.1 Worker runtime layer
-
-Current app adds:
-
-- `RuntimeClient`
-- worker module
-- `SessionRuntimeRegistry`
-- `AgentHost`
-
-Sitegeist does not need these because the sidepanel page itself owns the runtime.
-
-This added complexity is justified by product requirements:
-
-- shared runtime across tabs when `SharedWorker` exists
-- dedicated worker fallback otherwise
-- sessions survive reloads
-- UI can reconnect to persisted state through Dexie
-
-Requirement source:
-
-- `AGENTS.md:19`
-- `SPEC.md:92-104`
-
-Verdict:
-
-- **justified**
-- but currently over-abstracted in spots
-
-### 4.2 Persistence is more robust, but much more bespoke
-
-Sitegeist saves full session snapshots on subscription.
-
-Current runtime persists much more incrementally:
-
-- create user row
-- create streaming assistant placeholder row
-- persist tool results while stream still active
-- write session boundary state separately
-- aggregate cost once per assistant id
-- append local system messages for repo/provider/runtime failures
-
-Evidence:
-
-- placeholder rows: `src/agent/agent-host.ts:155-175`
-- persist tool results mid-stream: `src/agent/agent-host.ts:431-490`
-- boundary persistence: `src/agent/agent-host.ts:493-538`
-- dedupe cost writes: `src/agent/agent-host.ts:416-428`, `546-559`
-
-This is not fake complexity. It adds robustness. Especially for repo-tool sessions.
-
-### 4.3 Provider stream/proxy logic diverges from Sitegeist
-
-Sitegeist proxy helper only proxies some providers:
-
-- Z-AI always
-- Anthropic OAuth tokens
-- others direct
-
-See `docs/pi-mono/packages/web-ui/src/utils/proxy-utils.ts:19-50`.
-
-Current app proxies more aggressively:
-
-```ts
-// src/agent/provider-stream.ts:219-230
-switch (provider.toLowerCase()) {
-  case "anthropic":
-    return apiKey.startsWith("sk-ant-oat") || apiKey.startsWith("{")
-  case "openai":
-  case "openai-codex":
-  case "opencode":
-  case "opencode-go":
-    return true
-  default:
-    return false
-}
-```
-
-This is a deliberate web-app adaptation, not obviously overengineering.
-
-Reason:
-
-- Sitegeist is an extension runtime
-- this app is a normal browser tab
-- CORS / backend-api access constraints differ
-
-Evidence from tests:
-
-- codex proxied: `tests/provider-stream.test.ts:80-163`
-- google stays direct: `tests/provider-stream.test.ts:165-220`
-
-Verdict:
-
-- **do not simplify this toward Sitegeist blindly**
-- this is one of the places where runtime environment actually matters
-
----
-
-## 5. Current design strengths
-
-These parts looked solid.
-
-### 5.1 Dexie-as-source-of-truth is a good choice
-
-UI state comes from Dexie, not from live `Agent` subscriptions. This means:
-
-- reload-safe
-- worker-safe
-- easier eventual multi-tab consistency
-
-Compared to Sitegeist:
-
-- Sitegeist full session data + metadata live in separate stores
-- current app uses `sessions` + `messages` + derived metadata fields in `sessions`
-
-Current schema:
-
-- `src/db/schema.ts:17-24`
-- message/session split: `src/db/schema.ts:27-35`
-
-Sitegeist schema reasoning:
-
-- `docs/sitegeist/docs/storage.md:163-220`
-
-My take:
-
-- current `sessions` + `messages` split is sensible for streamed transcripts
-- not having Sitegeist’s `sessions-metadata` store is okay because current `sessions` rows are already metadata-like, not full transcript blobs
-
-So this part is simpler, not worse.
-
-### 5.2 Error classification -> local system messages is useful
-
-This is a net improvement for repo-backed chat UX.
-
-Code:
-
-- classify: `src/agent/runtime-errors.ts:45-161`
-- append local message: `src/agent/agent-host.ts:599-636`
-- UI render + CTA: `src/components/chat-message.tsx:74-145`
-
-It keeps tool/provider failures inside transcript, but not in LLM context:
-
-```ts
-// src/agent/session-adapter.ts:104-109
-export function toAgentMessages(messages: MessageRow[]): Message[] {
-  return messages
-    .filter((row) => row.role !== "system")
-    .map((message) => toChatMessage(message) as Message)
-}
-```
-
-That separation is clean.
-
-### 5.3 Repo tools are injected only when runtime exists
-
-```ts
-// src/agent/agent-host.ts:575-583
-private getAgentTools(runtime = this.repoRuntime) {
-  if (!runtime) {
-    return []
-  }
-
-  return createRepoTools(runtime, {
-    onRepoError: (err) => this.appendSystemNoticeFromError(err),
-  }).agentTools
-}
-```
-
-Good:
-
-- no repo tool noise in plain chat sessions
-- aligns with `SPEC.md:106-112`
-
----
-
-## 6. Real over-complexity / dead surface
-
-This is the important section.
-
-### 6.1 `AgentHost` is too big
-
-`AgentHost` is 637 LOC. It currently mixes 5 concerns:
-
-1. agent construction/config
-2. runtime mutation API
-3. transcript persistence
-4. usage/cost dedupe
-5. error notice translation
-
-That makes it hard to reason about correctness.
-
-Evidence of defensive complexity:
-
-```ts
-// src/agent/agent-host.ts:210-220
-if (this.session.isStreaming) {
-  console.warn(
-    `[agent-host] Safety net: session ${this.session.id} still marked isStreaming after prompt resolved, forcing off`
-  )
-  this.session = {
-    ...this.session,
-    isStreaming: false,
-    updatedAt: getIsoNow(),
-  }
-  await putSession(this.session)
-  this.clearActiveStreamPointers()
-}
-```
-
-This safety net may be prudent. But its existence is a smell: event ordering / persistence lifecycle is hard enough that host no longer trusts normal completion path.
-
-Recommendation:
-
-- split `AgentHost` into:
-  - `SessionAgent` or `AgentController`: only wraps `Agent`
-  - `SessionPersistence`: row writes + metadata derivation
-  - `RuntimeNoticeService`: classify + dedupe system notices
-
-### 6.2 Client + registry mutation APIs are copy-pasted
-
-`RuntimeClient` repeats the same pattern for every method:
-
-- `ensureConnected()`
-- `ensureSession(sessionId)`
-- call method
-- fallback `{ ok: false, error: "missing-session" }`
-
-`SessionRuntimeRegistry` repeats the same pattern too:
-
-- `ensureSession(sessionId)`
-- fetch host
-- missing-session guard
-- busy guard
-- invoke method
-
-Evidence:
-
-- repeated client calls: `src/agent/runtime-client.ts:67-142`
-- repeated registry guards: `src/agent/session-runtime-registry.ts:36-229`
-
-`rg` count evidence:
-
-- many repeated `await this.ensureConnected()`
-- many repeated `const exists = await this.ensureSession(sessionId)`
-- many repeated `const host = this.sessionHosts.get(sessionId)`
-
-Recommendation:
-
-- add one generic helper in client:
-
-```ts
-private async callSessionMutation<T extends keyof RuntimeWorkerApi>(...)
-```
-
-- add one generic helper in registry:
-
-```ts
-private async withHost(sessionId, options, fn)
-```
-
-This cuts surface area without changing behavior.
-
-### 6.3 `setRepoSource()` looks dead
-
-I found no caller of `runtime.setRepoSource(...)` or `runtimeClient.setRepoSource(...)` outside the hook that defines it.
-
-Evidence:
-
-```txt
-src/hooks/use-runtime-session.ts:80:        const result = await runtimeClient.setRepoSource(
-```
-
-No UI call sites found.
-
-But it exists across the full stack:
-
-- `src/hooks/use-runtime-session.ts`
+Primary code:
 - `src/agent/runtime-client.ts`
-- `src/agent/runtime-worker-types.ts`
+
+### `runtime-worker.ts`
+
+This is only the bridge layer.
+
+It:
+
+- detects `SharedWorker` shape via `onconnect`
+- exposes the worker API through Comlink
+- otherwise exposes the same API directly for a dedicated worker
+
+This file does not own session logic. It only chooses the wiring shape.
+
+Primary code:
 - `src/agent/runtime-worker.ts`
-- `src/agent/session-runtime-registry.ts`
-- `src/agent/agent-host.ts`
 
-Recommendation:
+### `runtime-worker-api.ts`
 
-- if dynamic repo retargeting is not planned imminently: delete it now
-- if planned: add the actual caller soon, or it will rot
+This is the actual worker-side session API implementation.
 
-### 6.4 `src/agent/runtime.ts` is effectively test-only
+It currently uses module-level state:
 
-`createRuntime()`:
+- `let host: AgentHost | undefined`
+- `let activeSessionId: string | undefined`
 
-```ts
-// src/agent/runtime.ts
-export function createRuntime(config?: Partial<RuntimeConfig>): RuntimeConfig {
-  return {
-    tools: config?.tools ?? [],
-  }
-}
+That means:
+
+- one worker instance can only serve one session at a time
+- this is intentional and matches the per-session worker naming
+
+This file answers the "per assistant or global?" question directly:
+
+- today the design is **per session worker**
+
+Primary code:
+- `src/agent/runtime-worker-api.ts`
+
+### `runtime-worker-types.ts`
+
+Comlink-exposed API contract:
+
+- `init`
+- `send`
+- `abort`
+- `dispose`
+- `refreshGithubToken`
+- `setModelSelection`
+- `setThinkingLevel`
+
+### `runtime-command-errors.ts`
+
+Defines the two important worker command failures:
+
+- `busy`
+- `missing-session`
+
+This is how the client translates worker failures into user-facing messages.
+
+### `runtime-errors.ts` and `runtime-notice-service.ts`
+
+These classify runtime/repo/provider failures into local system messages.
+
+This is why repo or provider failures can appear as system notices in-chat rather than only as thrown exceptions.
+
+### `message-transformer.ts`
+
+Transforms persisted/agent messages into LLM input form.
+
+Key behavior:
+
+- filters out non-LLM roles
+- reorders tool results after assistant tool calls
+
+### `provider-stream.ts`
+
+Wraps provider streaming and normalizes it into the app's assistant-message stream.
+
+Important behavior:
+
+- strips empty trailing assistant placeholders from context
+- converts provider stream events into normalized assistant partials
+- synthesizes error assistant messages on stream failure
+
+### `provider-proxy.ts`
+
+Applies proxy routing when needed for supported providers.
+
+### `system-prompt.ts`
+
+Defines the runtime system prompt for the gitinspect agent.
+
+---
+
+## 2. Actual Topology
+
+The runtime topology today is:
+
+```mermaid
+flowchart LR
+  UI["React UI"] --> RC["RuntimeClient"]
+  RC -->|SharedWorker if supported| W1["Worker for session A"]
+  RC -->|SharedWorker if supported| W2["Worker for session B"]
+  W1 --> H1["AgentHost(session A)"]
+  W2 --> H2["AgentHost(session B)"]
+  H1 --> D["Dexie"]
+  H2 --> D["Dexie"]
+  UI --> D
 ```
 
-Usage:
+That is the key thing to internalize:
 
-- only test reference: `tests/runtime-audit.test.ts:4-15`
+- the UI does not subscribe to a live agent directly
+- the UI reacts to Dexie
+- the worker is just a command executor plus warm in-memory runtime
 
-This file is not part of runtime execution. It is just keeping a seam alive for an audit assertion.
+This is cleaner than Sitegeist-style direct agent ownership in the page, but it also means lifecycle bugs tend to come from the seam between:
 
-Recommendation:
+- provisional session row
+- worker init
+- first durable prompt persistence
 
-- remove file + replace test with direct assertion against actual runtime setup
-- or move it to a tiny `runtime-audit-fixture.ts` if you insist on keeping the test
+---
 
-### 6.5 `src/agent/live-runtime.ts` is pure indirection
+## 3. SharedWorker Lifecycle In This Codebase
 
-File contents:
+### What gets created?
+
+`RuntimeClient.createWorker(sessionId)` names each worker with the session id:
+
+- `gitinspect-session-sess-a`
+- `gitinspect-session-sess-b`
+
+That means:
+
+- same `sessionId` -> same named `SharedWorker` namespace
+- different `sessionId` -> different `SharedWorker` namespace
+
+This is validated by `tests/runtime-client.test.ts`.
+
+So the answer to:
+
+> should we have a shared worker per agent assistant?
+
+is:
+
+- you already do, effectively
+- specifically: one worker per session/conversation, not one worker for the whole app
+
+### What is shared across tabs?
+
+In `SharedWorker` browsers:
+
+- if two tabs connect to the same script URL and the same worker name
+- they can attach to the same underlying worker instance
+
+Because the name includes the `sessionId`, the sharing boundary is:
+
+- **shared per session across tabs**
+- **not shared across different sessions**
+
+### When does the worker stop?
+
+Practically:
+
+- dedicated worker: stops when terminated or when its owning page goes away
+- shared worker: can stay alive while at least one connected document/port keeps it alive
+- once all ports are closed and no page is using it, the browser is free to terminate it
+
+Important nuance:
+
+- `SharedWorker` lifetime is browser-managed
+- you should not depend on exact shutdown timing
+
+In this app that is okay because:
+
+- Dexie is the source of truth
+- worker memory is reconstructible
+
+### What happens on reload?
+
+If the page reloads:
+
+- the in-page `RuntimeClient` instance is destroyed
+- its ports/worker handles go away
+- the shared worker may or may not still remain alive, depending on whether another page still holds a port
+
+On the next send or mutation:
+
+- a new `RuntimeClient` instance is created
+- it creates a worker handle again
+- `init(sessionId)` runs
+- if the old worker still exists and matches the same named worker, it can continue
+- if not, the worker will rehydrate from Dexie via `loadSessionWithMessages()`
+
+So persistence does not depend on keeping workers alive.
+
+### What happens when we explicitly release?
+
+`runtimeClient.releaseSession(sessionId)`:
+
+1. calls worker-side `dispose()`
+2. closes the shared worker port or terminates the dedicated worker
+3. removes the handle from the client map
+
+This happens today when deleting a session, not when simply switching away from it.
+
+That means idle workers can accumulate for visited sessions in a tab until:
+
+- delete
+- reload
+- browser teardown
+
+This is one reason the current setup can feel heavier than it needs to.
+
+---
+
+## 4. Current Worker Ownership Model
+
+`runtime-worker-api.ts` is very explicit:
+
+- one module-level `host`
+- one module-level `activeSessionId`
+
+So the ownership model is:
+
+- one `AgentHost` per worker instance
+- one session per worker instance
+
+Because `runtime-client.ts` creates a worker per session id, these layers match each other.
+
+That alignment is good.
+
+What would be broken is:
+
+- keeping `runtime-worker-api.ts` single-host
+- but moving to one global shared worker name for all sessions
+
+That would cause session collisions immediately.
+
+So if you ever want one true global SharedWorker, `runtime-worker-api.ts` must become:
 
 ```ts
-export { streamChatWithPiAgent } from "@/agent/provider-stream"
+const hosts = new Map<string, AgentHost>()
 ```
 
-Only imported from `src/agent/agent-host.ts:26`.
+not:
 
-Recommendation:
-
-- inline import from `provider-stream`
-
-### 6.6 `toOpenAIChatMessages()` and `toAnthropicMessages()` look dead
-
-Definitions:
-
-- `src/agent/message-transformer.ts:117-171`
-- `src/agent/message-transformer.ts:226-343`
-
-Search result:
-
-- no app imports
-- no test imports
-
-These look like old adapter helpers from a previous transport approach.
-
-Recommendation:
-
-- delete both unless a near-term feature branch needs them
-
-### 6.7 `WorkerMode` is dead right now
-
-`createWorkerApi()` returns `{ api, mode }`, but `mode` is discarded.
-
-Evidence:
-
-- definition: `src/agent/runtime-worker-types.ts:4`
-- returned from client factory: `src/agent/runtime-client.ts:14-37`
-- no read sites found
-
-Recommendation:
-
-- either expose mode for diagnostics/UI
-- or delete it
+```ts
+let host
+let activeSessionId
+```
 
 ---
 
-## 7. Places where we are actually simpler/better than Sitegeist
+## 5. First-Send Lifecycle
 
-Worth stating, because otherwise cleanup can go in the wrong direction.
+This is the lifecycle that matters most for your bootstrap proposal.
 
-### 7.1 No window lock system
+### Current sequence
 
-Sitegeist needs window-scoped session locks because navigation context is window-specific and sidepanel-owned.
+```mermaid
+sequenceDiagram
+  participant UI as Chat UI
+  participant DB as Dexie
+  participant RC as RuntimeClient
+  participant W as Worker
+  participant H as AgentHost
 
-See:
+  UI->>DB: create provisional session row
+  UI->>UI: navigate to session route
+  UI->>RC: send(sessionId, content)
+  RC->>W: init(sessionId)
+  W->>DB: loadSessionWithMessages(sessionId)
+  W->>H: new AgentHost(session, messages)
+  RC->>W: send(content)
+  W->>H: prompt(content)
+  H->>DB: persistPromptStart(userRow, assistantRow)
+  H->>Agent: agent.prompt(userMessage)
+  Agent-->>H: stream events
+  H->>DB: streaming progress / final boundary
+```
 
-- `docs/sitegeist/docs/multi-window.md:1-213`
-- `docs/sitegeist/src/background.ts:29-166`
+### Where the provisional session is created
 
-Current app does not have this complexity. Good. It should not copy it.
+`createSessionForChat()` / `createSessionForRepo()`:
 
-### 7.2 No extension-only message types in runtime
+- create a `SessionData`
+- persist it immediately
+- return it to the UI
 
-Sitegeist has:
+At this point the session exists in Dexie, but it is still only a shell:
 
-- navigation messages
-- welcome messages
-- artifact/welcome filtering in transformer
-- page/runtime providers
+- no message rows
+- `isStreaming: false`
+- no guarantee first prompt bootstrap will succeed
 
-Current runtime avoids all of that. Good.
+This is why the current system needs heuristics later.
 
-### 7.3 Session storage model is not worse than Sitegeist
+### Where the prompt becomes real
 
-Sitegeist full session = whole message array blob in `sessions` store. Metadata duplicated in `sessions-metadata`.
+The real bootstrap boundary is:
 
-Current app:
+```ts
+await this.persistence.persistPromptStart(userRow, assistantRow)
+```
 
-- messages normalized into separate `messages` rows
-- session row carries only derived metadata + config
+in `AgentHost.prompt()`.
 
-That is arguably a better fit for streamed persistence.
+That is the exact moment where the session stops being a shell and becomes a real conversation.
 
----
-
-## 8. Specific improvement proposals
-
-Ordered by value.
-
-### P1. Split `AgentHost`
-
-Why:
-
-- biggest complexity node
-- highest cognitive load
-- most error-prone lifecycle code
-
-Suggested split:
-
-- `agent-session.ts`
-  - construct `Agent`
-  - expose `prompt/abort/setModel/setThinkingLevel/setTools`
-- `session-persistence.ts`
-  - `persistStreamingProgress`
-  - `persistSessionBoundary`
-  - message row conversion / metadata derivation
-- `runtime-notices.ts`
-  - error classification + dedupe + system notice append
-
-Expected gain:
-
-- smaller files
-- easier unit tests
-- less lifecycle coupling
-
-### P1. Collapse mutation boilerplate in client + registry
-
-Why:
-
-- clear repetition
-- low risk
-- reduces surface for drift bugs
-
-Targets:
-
-- `src/agent/runtime-client.ts`
-- `src/agent/session-runtime-registry.ts`
-
-### P1. Delete stale API seams
-
-Delete or justify:
-
-- `src/agent/runtime.ts`
-- `src/agent/live-runtime.ts`
-- `toOpenAIChatMessages()`
-- `toAnthropicMessages()`
-- unused `WorkerMode`
-- possibly `setRepoSource()` stack
-
-This is the cleanest immediate simplification pass.
-
-### P2. Decide whether `streamChat()` is product code or test seam
-
-`streamChat()` in `src/agent/provider-stream.ts:433-490` is used by tests, but app runtime uses `streamChatWithPiAgent`.
-
-This is fine if intentional.
-
-If not intentional:
-
-- move lower-level adapter tests to `streamChatWithPiAgent`
-- keep only one public streaming surface
-
-### P2. Make shared/dedicated worker mode observable if it matters
-
-The runtime already branches on worker type, but UI has no visibility.
-
-If useful:
-
-- expose worker mode in debug/settings
-- helps diagnose mobile/browser behavior
-
-If not useful:
-
-- delete mode type/value
-
-### P3. Re-evaluate prompt surface
-
-Current prompt is only 51 LOC and much slimmer than Sitegeist. Good.
-
-But it still contains instructions about:
-
-- parallel tool calling
-- bash environment specifics
-- output contract/source links
-
-See `src/agent/system-prompt.ts:1-51`.
-
-Question:
-
-- does all of that belong in system prompt
-- or should some move into tool descriptions / UI constraints
-
-Not urgent. Just worth revisiting once runtime cleanup is done.
+This is why a state machine should promote to `ready` **after** `persistPromptStart()` succeeds, not after session creation.
 
 ---
 
-## 9. What I would not change
+## 6. Streaming Lifecycle
 
-These looked correct.
+Once the first prompt is durably established:
 
-### 9.1 Keep worker-hosted runtime
+1. `AgentHost.handleEvent()` receives stream events
+2. if still streaming:
+   - it persists the current assistant draft
+   - it persists newly completed rows
+3. if a `turn_end` includes tool results:
+   - it rotates to a new assistant id for the next assistant phase
+4. when streaming finishes:
+   - it persists final session boundary
+   - clears `isStreaming`
+   - clears active draft pointers
 
-Given product constraints, I would keep:
+Important specificities:
 
-- `SharedWorker` first
-- `Worker` fallback
-- Dexie as transcript source of truth
+- assistant ids are stable at the persistence layer, not necessarily the raw upstream event ids
+- tool result rows are attached to the active assistant id
+- usage is recorded only once per final assistant message
 
-This is the right shape for browser tabs. Sitegeist’s in-page agent model does not map 1:1.
+This part is actually fairly well structured.
 
-### 9.2 Keep local system notices out of LLM context
-
-That split is clean and useful.
-
-### 9.3 Keep incremental message persistence
-
-For repo tools and streamed responses, current approach is more robust than snapshot-only session saves.
-
----
-
-## 10. Concrete dead-code/stale-code list
-
-High confidence:
-
-- `src/agent/runtime.ts`
-  - app-dead, test-only
-- `src/agent/live-runtime.ts`
-  - one-line alias
-- `src/agent/message-transformer.ts`
-  - `toOpenAIChatMessages()`
-  - `toAnthropicMessages()`
-- `src/agent/runtime-worker-types.ts`
-  - `WorkerMode` if diagnostics not planned
-- `src/hooks/use-runtime-session.ts`
-  - `setRepoSource()` branch appears uncalled
-
-Medium confidence:
-
-- `src/agent/provider-stream.ts`
-  - `streamChat()` may be test-only / internal seam
-
-Not dead, but too coupled:
-
-- `src/agent/agent-host.ts`
-- `src/agent/session-runtime-registry.ts`
-- `src/agent/runtime-client.ts`
+The awkwardness is before this lifecycle starts.
 
 ---
 
-## 11. Final judgment
+## 7. Error And Abort Lifecycle
 
-From first principles:
+### Error after `persistPromptStart()`
 
-- compared to Sitegeist, the current app did **not** overcomplicate the runtime in every direction
-- the **core architectural divergence is justified** by browser-tab constraints + shared-worker requirement
-- the **implementation around that divergence is where complexity accumulated**
+If `persistPromptStart()` has already succeeded and the model prompt fails:
 
-So:
+- the session should stay
+- the assistant row should be converted into an errored assistant row
+- the session error should be persisted
+- optional system/runtime notices may be appended
 
-- keep the worker/Dexie/runtime split
-- aggressively trim stale seams
-- shrink `AgentHost`
-- collapse wrapper boilerplate
+That is exactly what the current code already does reasonably well.
 
-That gets simpler, better, more robust, without regressing the parts that are solving real problems.
+### Error before `persistPromptStart()`
+
+This is the brittle case.
+
+If a failure happens before the first optimistic rows are durably written, the app currently has:
+
+- a session row
+- maybe a route navigation
+- maybe a worker handle
+- no real conversation rows yet
+
+That is why `Chat` currently has `persistDetachedSendError()` style cleanup logic: it is inferring a bootstrap failure from side effects.
+
+That inference is the fragile part.
+
+### Abort
+
+Abort is simpler:
+
+- `runtimeClient.abort(sessionId)` forwards to worker `abort()`
+- `AgentHost.abort()` marks terminal status as `"aborted"` and aborts the agent
+- persistence layer eventually writes an aborted assistant row when the stream settles
+
+---
+
+## 8. Why The Current Setup Feels Brittle
+
+The shared worker is only part of the story.
+
+The deeper reasons are:
+
+### 8.1 Bootstrap is implicit
+
+The system currently infers meaning from:
+
+- session exists
+- session has zero or more rows
+- `isStreaming` true or false
+- `error` present or absent
+- worker exists or not
+
+That is too indirect for first-send recovery.
+
+### 8.2 Session creation and conversation creation are conflated
+
+Today:
+
+- `createSessionForChat/createSessionForRepo` persists a normal-looking session immediately
+
+But semantically that session is not normal yet. It is still provisional.
+
+### 8.3 Idle worker retention is under-managed
+
+Workers are cached by session id in `RuntimeClient.workers`.
+
+They are released when:
+
+- session is deleted
+
+They are not released when:
+
+- the user switches away
+- the stream completes
+- the session becomes long-idle
+
+That means the runtime lifecycle is longer than the product lifecycle really needs.
+
+### 8.4 There is no explicit "active runtime vs persisted session shell" distinction
+
+Dexie stores the session row.
+Worker memory stores the warm runtime.
+The code does not explicitly model when a persisted session shell should be considered a real conversation.
+
+That is exactly what `bootstrapStatus` would fix.
+
+---
+
+## 9. Should We Keep A Worker Per Session?
+
+Short answer:
+
+- per-session runtime ownership is a reasonable model
+- per-session worker lifetime for every touched session is not ideal
+
+### Why per-session ownership is reasonable
+
+It gives you:
+
+- easy isolation
+- no cross-session state contamination
+- clear busy semantics
+- natural shared-across-tabs behavior for the same conversation
+
+### Why per-session workers forever are not ideal
+
+An idle worker currently mostly holds:
+
+- an `AgentHost`
+- tool/runtime setup
+- warm in-memory state derived from Dexie
+
+It is **not** doing meaningful background work once idle.
+
+So if you keep many idle session workers around, you are paying complexity and memory for very little product value.
+
+### Practical conclusion
+
+Best product/runtime tradeoff for this repo:
+
+- keep **per-session runtime semantics**
+- do **not** keep every session worker alive indefinitely
+
+That can be achieved in two ways.
+
+#### Option A: keep current per-session worker model, add idle eviction
+
+This is the smallest change.
+
+Do:
+
+- keep one worker per session id
+- release idle workers after a timeout or when leaving the session
+- reconstruct from Dexie on demand
+
+This preserves the existing architecture and reduces lingering runtime state.
+
+#### Option B: move to one global SharedWorker runtime manager
+
+This is architecturally cleaner long-term, but bigger:
+
+- one `SharedWorker`
+- `Map<sessionId, AgentHost>`
+- explicit per-session idle eviction
+- explicit bootstrap lifecycle per host
+
+This is a better systems design if you expect many sessions and want true centralized runtime management.
+
+But it is not a small refactor.
+
+---
+
+## 10. Should We Leave It Running In The Background?
+
+Not by default for every session.
+
+Reasons:
+
+1. the runtime is not the source of truth; Dexie is
+2. there is no long-running background job model here
+3. idle runtime state is mostly just a warm cache
+4. recovery from worker loss is already possible through `init(sessionId)` + Dexie rehydration
+
+So background longevity should be a policy choice, not the default behavior of every touched session.
+
+Good rule:
+
+- keep the runtime alive while the session is active or streaming
+- optionally keep it warm for a short idle window
+- then dispose it
+
+That matches what the code actually needs.
+
+---
+
+## 11. Recommended Direction
+
+Your proposal is the right direction.
+
+The most practical architecture for this repo is:
+
+### 11.1 Add a persisted bootstrap state machine
+
+Add to `SessionData`:
+
+```ts
+type BootstrapStatus = "bootstrap" | "ready" | "failed"
+```
+
+Semantics:
+
+- `bootstrap`
+  - session shell exists
+  - first prompt not durably established yet
+- `ready`
+  - `persistPromptStart()` succeeded at least once
+  - normal chat behavior applies
+- `failed`
+  - bootstrap failed before promotion
+  - UI can offer retry or discard
+
+For v0, rollback-on-failure is also reasonable:
+
+- if `bootstrapStatus !== "ready"` and there are no message rows, the session is provisional and can be discarded safely
+
+### 11.2 Introduce `bootstrapSessionAndSend(...)`
+
+Move first-send orchestration out of `chat.tsx`.
+
+That coordinator should own:
+
+1. create provisional session
+2. persist `bootstrapStatus: "bootstrap"`
+3. navigate
+4. init runtime
+5. send
+6. wait for first prompt durability threshold
+7. mark `ready` or roll back
+
+That will remove the current ad hoc bootstrap-recovery logic from the UI.
+
+### 11.3 Keep per-session runtime semantics, but add lifecycle policy
+
+Near-term recommendation:
+
+- keep the current per-session worker model
+- add explicit idle release
+- do not keep dormant workers forever
+
+Long-term recommendation:
+
+- if runtime complexity keeps growing, migrate from:
+  - "one worker instance per session"
+- to:
+  - "one global runtime manager worker with `Map<sessionId, AgentHost>`"
+
+But only do that if you actually need centralized scheduling or many concurrent session runtimes.
+
+### 11.4 Change the UI contract
+
+The UI should stop treating:
+
+- `messages.length === 0`
+
+as sufficient to show the normal empty chat state.
+
+Instead:
+
+- `bootstrap` -> show starting/provisional UI
+- `ready && messages.length === 0` -> show normal empty chat
+- `failed` -> show retry/discard treatment
+
+That is the cleanest way to stop the "repo card flashes even though bootstrap is broken" class of bugs.
+
+---
+
+## 12. Concrete Answers To Your Questions
+
+### "What is the lifecycle of a shared worker when it stops?"
+
+In this app:
+
+- a shared worker is created lazily on first runtime mutation for a session
+- it is keyed by session id through the worker name
+- it can outlive a single tab if another tab still holds a port to the same named worker
+- it can be explicitly disposed through `releaseSession()`
+- otherwise the browser may terminate it once no pages hold ports anymore
+- when it dies, the app can rehydrate from Dexie on next init
+
+### "When we send messages what happens?"
+
+Current flow:
+
+1. UI creates a provisional session row in Dexie
+2. UI navigates to that session
+3. `runtimeClient.send(sessionId, content)` runs
+4. runtime client creates/gets worker for that session id
+5. worker `init(sessionId)` loads session + messages from Dexie
+6. worker builds `AgentHost`
+7. `AgentHost.prompt()` writes optimistic user + assistant rows via `persistPromptStart()`
+8. only then does the actual model prompt run
+9. stream updates persist incrementally
+10. completion/error/abort persists final session boundary
+
+### "Should we have a shared worker per assistant assistant or one background thing?"
+
+Current answer:
+
+- you effectively have one worker per session already
+
+Recommended answer:
+
+- keep per-session runtime ownership
+- do not keep all of them alive forever
+- add bootstrap state
+- add idle release
+
+If later you want a single background thing, do it intentionally with a real runtime manager and a `Map<sessionId, AgentHost>`, not by collapsing the current single-host worker API into one shared name.
+
+---
+
+## 13. Bottom Line
+
+The current architecture is closer to being good than it looks.
+
+The major issue is not that SharedWorker exists.
+The major issue is that bootstrap is implicit.
+
+The clean model for this repo is:
+
+- persisted provisional session
+- explicit bootstrap state
+- promote on `persistPromptStart()`
+- roll back provisional failures
+- keep runtime ownership per session
+- do not keep idle session workers around forever
+
+That gives you:
+
+- cleaner recovery
+- simpler UI logic
+- fewer zombie sessions
+- fewer hidden invariants
+- a better foundation whether you stay per-session-worker or later move to a global runtime manager
+

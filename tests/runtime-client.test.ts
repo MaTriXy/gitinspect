@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest"
 import type { SessionWorkerApi } from "@/agent/runtime-worker-types"
+import type { ProviderGroupId, ThinkingLevel } from "@/types/models"
 
 type WorkerApiStub = SessionWorkerApi & {
   abort: ReturnType<typeof vi.fn<() => Promise<void>>>
@@ -8,15 +9,10 @@ type WorkerApiStub = SessionWorkerApi & {
   refreshGithubToken: ReturnType<typeof vi.fn<() => Promise<void>>>
   send: ReturnType<typeof vi.fn<(content: string) => Promise<void>>>
   setModelSelection: ReturnType<
-    typeof vi.fn<
-      (
-        providerGroup: "openai-codex",
-        modelId: string
-      ) => Promise<void>
-    >
+    typeof vi.fn<(providerGroup: ProviderGroupId, modelId: string) => Promise<void>>
   >
   setThinkingLevel: ReturnType<
-    typeof vi.fn<(thinkingLevel: "medium" | "off" | "high") => Promise<void>>
+    typeof vi.fn<(thinkingLevel: ThinkingLevel) => Promise<void>>
   >
 }
 
@@ -38,13 +34,12 @@ function createApiStub(): WorkerApiStub {
     send: vi.fn((_content: string) => Promise.resolve()),
     setModelSelection: vi.fn(
       (
-        _providerGroup: "openai-codex",
+        _providerGroup: ProviderGroupId,
         _modelId: string
       ): Promise<void> => Promise.resolve()
     ),
     setThinkingLevel: vi.fn(
-      (_thinkingLevel: "medium" | "off" | "high"): Promise<void> =>
-        Promise.resolve()
+      (_thinkingLevel: ThinkingLevel): Promise<void> => Promise.resolve()
     ),
   }
 }
@@ -240,5 +235,30 @@ describe("RuntimeClient", () => {
 
     expect(api2.init).toHaveBeenCalledWith("sess-r")
     expect(sharedWorkerConstructors).toHaveLength(2)
+  })
+
+  it("drops a broken worker handle after a transport failure", async () => {
+    const api1 = createApiStub()
+    api1.send.mockRejectedValue(new Error("Worker port closed"))
+    const api2 = createApiStub()
+    wrapMock
+      .mockImplementationOnce(() => api1)
+      .mockImplementationOnce(() => api2)
+    installWindow(true)
+
+    const { RuntimeClient } = await import("@/agent/runtime-client")
+    const client = new RuntimeClient()
+
+    await expect(client.send("sess-t", "one")).rejects.toMatchObject({
+      message: "Worker port closed",
+    })
+
+    await client.send("sess-t", "two")
+
+    expect(api1.init).toHaveBeenCalledWith("sess-t")
+    expect(api1.send).toHaveBeenCalledWith("one")
+    expect(api2.init).toHaveBeenCalledWith("sess-t")
+    expect(api2.send).toHaveBeenCalledWith("two")
+    expect(wrapMock).toHaveBeenCalledTimes(2)
   })
 })

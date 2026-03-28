@@ -102,7 +102,6 @@ export function AppSettingsDialog() {
       : "providers"
   const open =
     typeof search.settings === "string" && isSettingsSection(search.settings)
-  const settingsDisabled = session?.isStreaming ?? false
   const sidebar = search.sidebar === "open" ? "open" : undefined
   const initialQuery =
     typeof search.initialQuery === "string" ? search.initialQuery : undefined
@@ -225,7 +224,6 @@ export function AppSettingsDialog() {
                 ) : null}
                 {section === "github" ? (
                   <GithubTokenSettings
-                    disabled={settingsDisabled}
                     onTokenSaved={async () => {
                       if (!sessionId) {
                         return
@@ -235,9 +233,7 @@ export function AppSettingsDialog() {
                     }}
                   />
                 ) : null}
-                {section === "proxy" ? (
-                  <ProxySettings disabled={settingsDisabled} />
-                ) : null}
+                {section === "proxy" ? <ProxySettings /> : null}
                 {section === "costs" ? (
                   <CostsPanel session={session} />
                 ) : null}

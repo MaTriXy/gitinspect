@@ -35,11 +35,7 @@ const Toaster = ({ ...props }: ToasterProps) => {
           "--border-radius": "var(--radius)",
         } as CSSProperties
       }
-      toastOptions={{
-        classNames: {
-          toast: "cn-toast",
-        },
-      }}
+      richColors
       {...props}
     />
   )

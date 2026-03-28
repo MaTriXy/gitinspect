@@ -1,5 +1,5 @@
 import { createFileRoute } from "@tanstack/react-router"
-import type { RepoSource } from "@/types/storage"
+import type { RepoTarget } from "@/types/storage"
 import { Chat } from "@/components/chat"
 
 type RepoSearch = {
@@ -23,7 +23,7 @@ export const Route = createFileRoute("/$owner/$repo/")({
 
 function RepoChatRoute() {
   const params = Route.useParams()
-  const repoSource: RepoSource = {
+  const repoSource: RepoTarget = {
     owner: params.owner,
     ref: "main",
     repo: params.repo,

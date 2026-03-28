@@ -1,45 +1,38 @@
 "use client"
 
 import * as React from "react"
-import { useLiveQuery } from "dexie-react-hooks"
 import { useNavigate, useSearch } from "@tanstack/react-router"
+import { useLiveQuery } from "dexie-react-hooks"
+import { toast } from "sonner"
 import { getFoldedToolResultIds } from "./chat-adapter"
 import { ChatComposer } from "./chat-composer"
 import { ChatEmptyState } from "./chat-empty-state"
 import { ChatMessage as ChatMessageBlock } from "./chat-message"
 import { RepoCombobox } from "./repo-combobox"
-import type { CSSProperties } from "react"
+import type { RepoComboboxHandle } from "./repo-combobox"
 import type { ProviderGroupId, ThinkingLevel } from "@/types/models"
 import type { ChatMessage } from "@/types/chat"
-import type { RepoSource, SessionData } from "@/types/storage"
+import type { RepoSource, RepoTarget, SessionData } from "@/types/storage"
 import {
   Conversation,
   ConversationContent,
   ConversationScrollButton,
 } from "@/components/ai-elements/conversation"
+import { StatusShimmer } from "@/components/ai-elements/shimmer"
 import { ProgressiveBlur } from "@/components/ui/progressive-blur"
-import type { RepoComboboxHandle } from "./repo-combobox"
-import { toast } from "sonner"
 import { Icons } from "@/components/icons"
 import { copySessionToClipboard } from "@/lib/copy-session-markdown"
-import { getRuntimeCommandErrorMessage } from "@/agent/runtime-command-errors"
-import { runtimeClient } from "@/agent/runtime-client"
 import { touchRepository } from "@/db/schema"
 import { useRuntimeSession } from "@/hooks/use-runtime-session"
-import { getIsoNow } from "@/lib/dates"
-import { logRuntimeDebug } from "@/lib/runtime-debug"
 import { getCanonicalProvider, getDefaultProviderGroup } from "@/models/catalog"
+import { normalizeRepoSource, resolveRepoSource } from "@/repo/settings"
 import {
-  createSessionForChat,
-  createSessionForRepo,
   persistLastUsedSessionSettings,
   resolveProviderDefaults,
   sessionDestination,
 } from "@/sessions/session-actions"
-import {
-  loadSessionWithMessages,
-  persistSessionSnapshot,
-} from "@/sessions/session-service"
+import { bootstrapSessionAndSend } from "@/sessions/session-bootstrap"
+import { loadSessionWithMessages } from "@/sessions/session-service"
 
 type EmptyChatDraft = {
   model: string
@@ -53,7 +46,7 @@ type LoadedSessionState =
   | { kind: "none" }
 
 export interface ChatProps {
-  repoSource?: RepoSource
+  repoSource?: RepoTarget
 }
 
 function LoadingState({ label }: { label: string }) {
@@ -100,24 +93,6 @@ function repoDestination(repoSource: RepoSource) {
   }
 }
 
-async function persistDetachedSendError(
-  sessionId: string,
-  error: Error | undefined
-) {
-  const loaded = await loadSessionWithMessages(sessionId)
-
-  if (!loaded || loaded.session.error || loaded.messages.length > 0) {
-    return
-  }
-
-  await persistSessionSnapshot({
-    ...loaded.session,
-    error: getRuntimeCommandErrorMessage(error),
-    isStreaming: false,
-    updatedAt: getIsoNow(),
-  })
-}
-
 export function Chat(props: ChatProps) {
   const navigate = useNavigate()
   const search = useSearch({ strict: false })
@@ -154,8 +129,11 @@ export function Chat(props: ChatProps) {
     } satisfies EmptyChatDraft
   }, [])
   const [draft, setDraft] = React.useState<EmptyChatDraft | undefined>(undefined)
-  const [draftError, setDraftError] = React.useState<string | undefined>(undefined)
   const [isStartingSession, setIsStartingSession] = React.useState(false)
+  const [resolvedRepoSource, setResolvedRepoSource] = React.useState<
+    RepoSource | undefined
+  >(() => normalizeRepoSource(props.repoSource))
+  const [repoResolutionFailed, setRepoResolutionFailed] = React.useState(false)
   const runtime = useRuntimeSession(sessionId)
   const observerRef = React.useRef<ResizeObserver | null>(null)
   const repoComboboxRef = React.useRef<RepoComboboxHandle>(null)
@@ -182,12 +160,55 @@ export function Chat(props: ChatProps) {
   }, [])
 
   React.useEffect(() => {
+    let cancelled = false
+
     if (!props.repoSource) {
+      setResolvedRepoSource(undefined)
+      setRepoResolutionFailed(false)
       return
     }
 
-    void touchRepository(props.repoSource)
-  }, [props.repoSource])
+    const normalized = normalizeRepoSource(props.repoSource)
+    if (normalized) {
+      setResolvedRepoSource(normalized)
+      setRepoResolutionFailed(false)
+      return
+    }
+
+    setResolvedRepoSource(undefined)
+    setRepoResolutionFailed(false)
+
+    void resolveRepoSource(props.repoSource)
+      .then((nextRepoSource) => {
+        if (!cancelled) {
+          setResolvedRepoSource(nextRepoSource)
+          setRepoResolutionFailed(false)
+        }
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setResolvedRepoSource(undefined)
+          setRepoResolutionFailed(true)
+        }
+      })
+
+    return () => {
+      cancelled = true
+    }
+  }, [
+    props.repoSource?.owner,
+    props.repoSource?.ref,
+    props.repoSource?.repo,
+    props.repoSource?.token,
+  ])
+
+  React.useEffect(() => {
+    if (!resolvedRepoSource) {
+      return
+    }
+
+    void touchRepository(resolvedRepoSource)
+  }, [resolvedRepoSource])
 
   React.useEffect(() => {
     if (!defaults) {
@@ -201,6 +222,10 @@ export function Chat(props: ChatProps) {
     loadedSessionState?.kind === "active" ? loadedSessionState.session : undefined
   const messages =
     loadedSessionState?.kind === "active" ? loadedSessionState.messages : []
+  const hasAssistantMessage = React.useMemo(
+    () => messages.some((message) => message.role === "assistant"),
+    [messages]
+  )
   const foldedToolResultIds = React.useMemo(
     () => getFoldedToolResultIds(messages),
     [messages]
@@ -216,8 +241,14 @@ export function Chat(props: ChatProps) {
       return
     }
 
+    if (props.repoSource && !resolvedRepoSource) {
+      return
+    }
+
     void navigate({
-      ...(props.repoSource ? repoDestination(props.repoSource) : { to: "/chat" as const }),
+      ...(resolvedRepoSource
+        ? repoDestination(resolvedRepoSource)
+        : { to: "/chat" as const }),
       replace: true,
       search: (prev) => ({
         initialQuery,
@@ -226,13 +257,13 @@ export function Chat(props: ChatProps) {
         sidebar: prev.sidebar,
       }),
     })
-  }, [initialQuery, loadedSessionState, navigate, props.repoSource])
+  }, [initialQuery, loadedSessionState, navigate, props.repoSource, resolvedRepoSource])
 
   React.useEffect(() => {
     if (
-      !props.repoSource ||
+      !resolvedRepoSource ||
       !activeSession ||
-      isSameRepoSource(activeSession.repoSource, props.repoSource)
+      isSameRepoSource(activeSession.repoSource, resolvedRepoSource)
     ) {
       return
     }
@@ -250,11 +281,10 @@ export function Chat(props: ChatProps) {
         sidebar: prev.sidebar,
       }),
     })
-  }, [activeSession, navigate, props.repoSource])
+  }, [activeSession, navigate, resolvedRepoSource])
 
   const persistDraft = React.useCallback((nextDraft: EmptyChatDraft) => {
     setDraft(nextDraft)
-    setDraftError(undefined)
     void persistLastUsedSessionSettings({
       model: nextDraft.model,
       provider: getCanonicalProvider(nextDraft.providerGroup),
@@ -268,29 +298,18 @@ export function Chat(props: ChatProps) {
         return
       }
 
-      setDraftError(undefined)
       setIsStartingSession(true)
 
       try {
-        const base = {
-          model: draft.model,
-          provider: getCanonicalProvider(draft.providerGroup),
-          providerGroup: draft.providerGroup,
-          thinkingLevel: draft.thinkingLevel,
-        }
-        const session = props.repoSource
-          ? await createSessionForRepo({
-              base,
-              owner: props.repoSource.owner,
-              ref: props.repoSource.ref,
-              repo: props.repoSource.repo,
-            })
-          : await createSessionForChat(base)
-
-        logRuntimeDebug("session_created", {
-          hasInitialQuery: Boolean(initialQuery),
-          repoSource: session.repoSource,
-          sessionId: session.id,
+        const session = await bootstrapSessionAndSend({
+          content,
+          draft: {
+            model: draft.model,
+            provider: getCanonicalProvider(draft.providerGroup),
+            providerGroup: draft.providerGroup,
+            thinkingLevel: draft.thinkingLevel,
+          },
+          repoTarget: props.repoSource,
         })
 
         await persistLastUsedSessionSettings(session)
@@ -307,19 +326,6 @@ export function Chat(props: ChatProps) {
             sidebar: prev.sidebar,
           }),
         })
-
-        void runtimeClient.send(session.id, content).catch(async (error) => {
-          await persistDetachedSendError(
-            session.id,
-            error instanceof Error ? error : undefined
-          )
-        })
-      } catch (error) {
-        setDraftError(
-          getRuntimeCommandErrorMessage(
-            error instanceof Error ? error : undefined
-          )
-        )
       } finally {
         setIsStartingSession(false)
       }
@@ -349,8 +355,16 @@ export function Chat(props: ChatProps) {
 
   if (
     props.repoSource &&
+    !resolvedRepoSource &&
+    !repoResolutionFailed
+  ) {
+    return <LoadingState label="Loading repository..." />
+  }
+
+  if (
+    resolvedRepoSource &&
     activeSession &&
-    !isSameRepoSource(activeSession.repoSource, props.repoSource)
+    !isSameRepoSource(activeSession.repoSource, resolvedRepoSource)
   ) {
     return <LoadingState label="Loading session..." />
   }
@@ -368,14 +382,16 @@ export function Chat(props: ChatProps) {
   const currentThinkingLevel =
     activeSession?.thinkingLevel ?? draft?.thinkingLevel ?? "medium"
   const isStreaming = activeSession?.isStreaming ?? isStartingSession
-  const currentError = activeSession
-    ? runtime.error ?? activeSession.error
-    : draftError
+  const currentBootstrapStatus = activeSession?.bootstrapStatus ?? "ready"
+  const showStreamingStatus =
+    (currentBootstrapStatus === "bootstrap" || isStreaming) &&
+    messages.length > 0 &&
+    !hasAssistantMessage
 
   return (
     <div
       className="relative flex size-full min-h-0 flex-col overflow-hidden"
-      style={{ "--chat-input-height": `${promptHeight}px` } as CSSProperties}
+      style={{ "--chat-input-height": `${promptHeight}px` } as React.CSSProperties}
     >
       <Conversation className="min-h-0 flex-1">
         <ConversationContent
@@ -383,12 +399,22 @@ export function Chat(props: ChatProps) {
             messages.length === 0 ? "min-h-full" : ""
           }`}
         >
-          {messages.length === 0 ? (
-            <ChatEmptyState
-              onSuggestionClick={(text) => void handleSend(text)}
-              onSwitchRepo={() => repoComboboxRef.current?.focusAndClear()}
-              repoSource={props.repoSource}
-            />
+          {currentBootstrapStatus === "bootstrap" && messages.length === 0 ? (
+            <div className="flex min-h-[30vh] items-center justify-center">
+              <StatusShimmer>Starting session...</StatusShimmer>
+            </div>
+          ) : showStreamingStatus ? (
+            <div className="mb-4 flex justify-start">
+              <StatusShimmer>Assistant is streaming...</StatusShimmer>
+            </div>
+          ) : messages.length === 0 ? (
+            currentBootstrapStatus === "ready" ? (
+              <ChatEmptyState
+                onSuggestionClick={(text) => void handleSend(text)}
+                onSwitchRepo={() => repoComboboxRef.current?.focusAndClear()}
+                repoSource={resolvedRepoSource}
+              />
+            ) : null
           ) : (
             messages.map((message, index) => {
               if (
@@ -431,8 +457,8 @@ export function Chat(props: ChatProps) {
           <div className="pointer-events-auto flex items-center justify-between pb-2">
             <RepoCombobox
               ref={repoComboboxRef}
-              autoFocus={!sessionId && !props.repoSource}
-              repoSource={props.repoSource}
+              autoFocus={!sessionId && !resolvedRepoSource}
+              repoSource={resolvedRepoSource}
             />
             {messages.length > 0 ? (
               <button
@@ -456,7 +482,6 @@ export function Chat(props: ChatProps) {
           <div className="mx-auto w-full max-w-4xl px-4 pb-4">
             <div ref={promptRef}>
               <ChatComposer
-                error={currentError}
                 initialInput={messages.length === 0 ? initialQuery : undefined}
                 isStreaming={isStreaming}
                 model={currentModel}

@@ -25,7 +25,7 @@ function RepoChatRoute() {
   const params = Route.useParams()
   const repoSource: RepoSource = {
     owner: params.owner,
-    ref: params._splat ?? "main",
+    ref: params._splat ?? "",
     repo: params.repo,
   }
 
