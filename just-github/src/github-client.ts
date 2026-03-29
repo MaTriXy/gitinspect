@@ -4,6 +4,10 @@ import {
   type GitHubContentResponse,
   type GitHubTreeResponse,
 } from "./types.js";
+import {
+  GitHubRateLimitController,
+  parseGitHubRateLimitInfo,
+} from "./github-rate-limit.js";
 
 export interface GitHubClientOptions {
   owner: string;
@@ -42,8 +46,7 @@ export class GitHubClient {
   private readonly ref: string;
   private readonly token?: string;
   private readonly baseUrl: string;
-  private blockedUntilMs = 0;
-  private secondaryBackoffMs = 60 * 1000;
+  private readonly rateLimitController = new GitHubRateLimitController();
   rateLimit: RateLimitInfo | null = null;
 
   constructor(options: GitHubClientOptions) {
@@ -71,9 +74,12 @@ export class GitHubClient {
     }
 
     const res = await fetch(url, { headers });
-    this.updateRateLimit(res);
+    const rateLimitBlock = await this.observeRateLimit(res);
+    if (rateLimitBlock) {
+      throw this.createRateLimitError(path, rateLimitBlock.blockedUntilMs);
+    }
     if (!res.ok) {
-      throw await this.httpError(res, path);
+      throw this.httpError(res, path);
     }
     return res.text();
   }
@@ -89,9 +95,12 @@ export class GitHubClient {
     }
 
     const res = await fetch(url, { headers });
-    this.updateRateLimit(res);
+    const rateLimitBlock = await this.observeRateLimit(res);
+    if (rateLimitBlock) {
+      throw this.createRateLimitError(path, rateLimitBlock.blockedUntilMs);
+    }
     if (!res.ok) {
-      throw await this.httpError(res, path);
+      throw this.httpError(res, path);
     }
     return new Uint8Array(await res.arrayBuffer());
   }
@@ -161,58 +170,41 @@ export class GitHubClient {
     }
 
     const res = await fetch(url, { headers });
-    this.updateRateLimit(res);
+    const rateLimitBlock = await this.observeRateLimit(res);
+    if (rateLimitBlock) {
+      throw this.createRateLimitError(pathForError, rateLimitBlock.blockedUntilMs);
+    }
 
     if (!res.ok) {
-      throw await this.httpError(res, pathForError);
+      throw this.httpError(res, pathForError);
     }
 
     return res.json() as Promise<T>;
   }
 
-  private updateRateLimit(res: Response): void {
-    const limit = res.headers.get("x-ratelimit-limit");
-    const remaining = res.headers.get("x-ratelimit-remaining");
-    const reset = res.headers.get("x-ratelimit-reset");
-    const retryAfter = parsePositiveInt(res.headers.get("retry-after"));
-
-    if (limit && remaining && reset) {
-      this.rateLimit = {
-        limit: parseInt(limit, 10),
-        remaining: parseInt(remaining, 10),
-        reset: new Date(parseInt(reset, 10) * 1000),
-      };
-
-      if (this.rateLimit.remaining === 0) {
-        this.blockedUntilMs = Math.max(
-          this.blockedUntilMs,
-          this.rateLimit.reset.getTime(),
-        );
-        this.secondaryBackoffMs = 60 * 1000;
-      } else if (res.ok && this.blockedUntilMs <= Date.now()) {
-        this.blockedUntilMs = 0;
-        this.secondaryBackoffMs = 60 * 1000;
-      }
+  private async observeRateLimit(res: Response) {
+    const info = parseGitHubRateLimitInfo(res);
+    if (info) {
+      this.rateLimit = info;
     }
 
-    if (retryAfter !== undefined) {
-      this.blockedUntilMs = Math.max(
-        this.blockedUntilMs,
-        Date.now() + retryAfter * 1000,
-      );
-    }
+    return await this.rateLimitController.afterResponse(res);
   }
 
   private throwIfRateLimited(path: string): void {
-    if (this.blockedUntilMs <= Date.now()) {
+    const rateLimitBlock = this.rateLimitController.beforeRequest();
+    if (!rateLimitBlock) {
       return;
     }
 
-    throw this.createRateLimitError(path);
+    throw this.createRateLimitError(path, rateLimitBlock.blockedUntilMs);
   }
 
-  private createRateLimitError(path: string): GitHubFsError {
-    const retryAt = new Date(this.blockedUntilMs).toLocaleTimeString();
+  private createRateLimitError(
+    path: string,
+    blockedUntilMs: number,
+  ): GitHubFsError {
+    const retryAt = new Date(blockedUntilMs).toLocaleTimeString();
     return new GitHubFsError(
       "EACCES",
       `GitHub API rate limit exceeded (retry after ${retryAt}): ${path}`,
@@ -220,47 +212,7 @@ export class GitHubClient {
     );
   }
 
-  private async readErrorMessage(res: Response): Promise<string | undefined> {
-    try {
-      const data = await res.clone().json() as { message?: unknown };
-      if (typeof data.message === "string" && data.message.trim().length > 0) {
-        return data.message.trim();
-      }
-    } catch {}
-
-    try {
-      const text = (await res.clone().text()).trim();
-      return text.length > 0 ? text : undefined;
-    } catch {
-      return undefined;
-    }
-  }
-
-  private async httpError(res: Response, path: string): Promise<GitHubFsError> {
-    const detail = (await this.readErrorMessage(res))?.toLowerCase();
-    const retryAfter = parsePositiveInt(res.headers.get("retry-after"));
-
-    if (
-      res.status === 429 ||
-      retryAfter !== undefined ||
-      (res.status === 403 &&
-        (this.rateLimit?.remaining === 0 || detail?.includes("rate limit")))
-    ) {
-      const retryAt =
-        retryAfter !== undefined
-          ? Date.now() + retryAfter * 1000
-          : this.rateLimit?.remaining === 0
-            ? this.rateLimit.reset.getTime()
-            : Date.now() + this.secondaryBackoffMs;
-
-      this.blockedUntilMs = Math.max(this.blockedUntilMs, retryAt);
-      this.secondaryBackoffMs = Math.min(
-        this.secondaryBackoffMs * 2,
-        15 * 60 * 1000,
-      );
-      return this.createRateLimitError(path);
-    }
-
+  private httpError(res: Response, path: string): GitHubFsError {
     switch (res.status) {
       case 404:
         return new GitHubFsError("ENOENT", `No such file or directory: ${path}`, path);
@@ -272,15 +224,6 @@ export class GitHubClient {
         return new GitHubFsError("EIO", `GitHub API error (${res.status}): ${path}`, path);
     }
   }
-}
-
-function parsePositiveInt(value: string | null): number | undefined {
-  if (!value) {
-    return undefined;
-  }
-
-  const parsed = parseInt(value, 10);
-  return Number.isFinite(parsed) && parsed >= 0 ? parsed : undefined;
 }
 
 function normalizePath(path: string): string {

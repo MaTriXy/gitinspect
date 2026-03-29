@@ -96,6 +96,7 @@ describe("GitHubFs", () => {
   });
 
   afterEach(() => {
+    vi.useRealTimers();
     vi.restoreAllMocks();
   });
 
@@ -222,6 +223,57 @@ describe("GitHubFs", () => {
       expect(rl).toBeDefined();
       expect(rl!.limit).toBe(5000);
       expect(rl!.remaining).toBe(4999);
+    });
+
+    it("blocks repeated reads until the primary rate limit reset", async () => {
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date("2026-03-29T10:00:00.000Z"));
+
+      const resetAtSeconds = Math.floor((Date.now() + 2 * 60_000) / 1000);
+      fetchSpy = vi
+        .fn()
+        .mockResolvedValueOnce(
+          new Response(JSON.stringify({ message: "API rate limit exceeded" }), {
+            status: 403,
+            headers: {
+              "Content-Type": "application/json",
+              "x-ratelimit-limit": "60",
+              "x-ratelimit-remaining": "0",
+              "x-ratelimit-reset": String(resetAtSeconds),
+            },
+          }),
+        )
+        .mockResolvedValueOnce(
+          new Response(JSON.stringify(mockFileContent), {
+            status: 200,
+            headers: {
+              "Content-Type": "application/json",
+              "x-ratelimit-limit": "60",
+              "x-ratelimit-remaining": "59",
+              "x-ratelimit-reset": String(resetAtSeconds + 3600),
+            },
+          }),
+        );
+      vi.stubGlobal("fetch", fetchSpy);
+      fs = new GitHubFs({ owner: "o", repo: "r", ref: "main" });
+
+      await expect(fs.readFile("src/index.ts")).rejects.toMatchObject({
+        code: "EACCES",
+        message: expect.stringContaining("GitHub API rate limit exceeded"),
+      });
+      expect(fetchSpy).toHaveBeenCalledTimes(1);
+
+      await expect(fs.readFile("src/index.ts")).rejects.toMatchObject({
+        code: "EACCES",
+        message: expect.stringContaining("GitHub API rate limit exceeded"),
+      });
+      expect(fetchSpy).toHaveBeenCalledTimes(1);
+
+      vi.setSystemTime(new Date((resetAtSeconds + 1) * 1000));
+
+      const content = await fs.readFile("src/index.ts");
+      expect(content).toBe("export const hello = 'world';");
+      expect(fetchSpy).toHaveBeenCalledTimes(2);
     });
   });
 

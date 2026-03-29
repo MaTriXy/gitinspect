@@ -20,6 +20,7 @@ vi.mock("@/sessions/session-notices", () => ({
 describe("github-fetch", () => {
   afterEach(() => {
     vi.restoreAllMocks()
+    vi.unstubAllGlobals()
     vi.useRealTimers()
     vi.resetModules()
     toastErrorMock.mockReset()
@@ -74,6 +75,66 @@ describe("github-fetch", () => {
 
     const response = await githubApiFetch("/repos/acme/demo")
     expect(response.ok).toBe(true)
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+  })
+
+  it("returns cached responses while a rate-limit block is active", async () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date("2026-03-29T10:00:00.000Z"))
+
+    const resetAtSeconds = Math.floor((Date.now() + 2 * 60_000) / 1000)
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ default_branch: "main" }), {
+          headers: {
+            "Content-Type": "application/json",
+            "x-ratelimit-limit": "60",
+            "x-ratelimit-remaining": "59",
+            "x-ratelimit-reset": String(resetAtSeconds + 3600),
+          },
+          status: 200,
+        })
+      )
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ message: "API rate limit exceeded" }), {
+          headers: {
+            "Content-Type": "application/json",
+            "x-ratelimit-limit": "60",
+            "x-ratelimit-remaining": "0",
+            "x-ratelimit-reset": String(resetAtSeconds),
+          },
+          status: 403,
+        })
+      )
+
+    const cacheStore = new Map<string, Response>()
+    const cache = {
+      match: vi.fn(async (url: string) => cacheStore.get(url)),
+      put: vi.fn(async (url: string, response: Response) => {
+        cacheStore.set(url, response)
+      }),
+    }
+
+    vi.stubGlobal("caches", {
+      open: vi.fn(async () => cache),
+    })
+    vi.stubGlobal("fetch", fetchMock)
+
+    const { githubApiFetch } = await import("@/repo/github-fetch")
+
+    const freshResponse = await githubApiFetch("/repos/acme/demo")
+    expect(freshResponse.ok).toBe(true)
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+
+    vi.setSystemTime(new Date(Date.now() + 11 * 60_000))
+
+    const cachedOnLimit = await githubApiFetch("/repos/acme/demo")
+    expect(cachedOnLimit.ok).toBe(true)
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+
+    const cachedDuringBlock = await githubApiFetch("/repos/acme/demo")
+    expect(cachedDuringBlock.ok).toBe(true)
     expect(fetchMock).toHaveBeenCalledTimes(2)
   })
 

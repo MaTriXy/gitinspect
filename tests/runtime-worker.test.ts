@@ -419,7 +419,9 @@ describe("runtime worker", () => {
     expect(pushSnapshot).toHaveBeenCalledWith(
       expect.objectContaining({
         runtimeErrors: ["Authentication required: /"],
-        terminalErrorMessage: "Authentication required: /",
+        snapshot: expect.objectContaining({
+          error: "Authentication required: /",
+        }),
         terminalStatus: "error",
       })
     )

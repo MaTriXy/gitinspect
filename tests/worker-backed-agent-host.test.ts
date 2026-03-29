@@ -325,11 +325,11 @@ describe("WorkerBackedAgentHost", () => {
     expect(persistenceRepairTurnFailure).not.toHaveBeenCalled()
   })
 
-  it("injects terminal GitHub errors into the snapshot before persistence cleanup", async () => {
+  it("persists terminal GitHub errors directly from the worker snapshot", async () => {
     const erroredEnvelope: WorkerSnapshotEnvelope = {
       sessionId: "session-1",
       snapshot: {
-        error: undefined,
+        error: "Authentication required: /",
         isStreaming: false,
         messages: [
           {
@@ -340,7 +340,6 @@ describe("WorkerBackedAgentHost", () => {
         ],
         streamMessage: null,
       },
-      terminalErrorMessage: "Authentication required: /",
       terminalStatus: "error",
     }
 
@@ -377,10 +376,7 @@ describe("WorkerBackedAgentHost", () => {
     await host.waitForTurn()
 
     expect(persistenceApplySnapshot).toHaveBeenCalledWith({
-      snapshot: {
-        ...erroredEnvelope.snapshot,
-        error: "Authentication required: /",
-      },
+      snapshot: erroredEnvelope.snapshot,
       terminalStatus: "error",
     })
     expect(persistencePersistCurrentTurnBoundary).not.toHaveBeenCalled()

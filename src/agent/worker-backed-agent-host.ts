@@ -28,25 +28,6 @@ export class WorkerBackedAgentHost implements SessionRunner {
     this.persistence = new AgentTurnPersistence(session, messages)
   }
 
-  private normalizeEnvelope(
-    envelope: WorkerSnapshotEnvelope
-  ): WorkerSnapshotEnvelope {
-    if (
-      envelope.terminalErrorMessage === undefined ||
-      envelope.snapshot.error !== undefined
-    ) {
-      return envelope
-    }
-
-    return {
-      ...envelope,
-      snapshot: {
-        ...envelope.snapshot,
-        error: envelope.terminalErrorMessage,
-      },
-    }
-  }
-
   isBusy(): boolean {
     return this.promptPending || this.runningTurn !== undefined || this.persistence.session.isStreaming
   }
@@ -76,21 +57,20 @@ export class WorkerBackedAgentHost implements SessionRunner {
         },
         createRuntimeWorkerEvents({
           pushSnapshot: async (envelope) => {
-            const normalizedEnvelope = this.normalizeEnvelope(envelope)
-            this.lastEnvelope = normalizedEnvelope
+            this.lastEnvelope = envelope
 
-            for (const runtimeError of normalizedEnvelope.runtimeErrors ?? []) {
+            for (const runtimeError of envelope.runtimeErrors ?? []) {
               await this.persistence.appendSystemNoticeFromError(
                 new Error(runtimeError)
               )
             }
 
             await this.persistence.applySnapshot({
-              snapshot: normalizedEnvelope.snapshot,
-              terminalStatus: normalizedEnvelope.terminalStatus,
+              snapshot: envelope.snapshot,
+              terminalStatus: envelope.terminalStatus,
             })
 
-            if (normalizedEnvelope.rotateStreamingAssistantDraft) {
+            if (envelope.rotateStreamingAssistantDraft) {
               this.persistence.rotateStreamingAssistantDraft()
             }
           },
@@ -100,7 +80,7 @@ export class WorkerBackedAgentHost implements SessionRunner {
         .waitForTurn(this.session.id)
         .then((envelope) => {
           if (envelope) {
-            this.lastEnvelope = this.normalizeEnvelope(envelope)
+            this.lastEnvelope = envelope
           }
         })
         .finally(() => {

@@ -4,7 +4,10 @@ import type {
   AgentTool,
 } from "@mariozechner/pi-agent-core"
 import { BusyRuntimeError } from "@/agent/runtime-command-errors"
-import { shouldStopStreamingForRuntimeError } from "@/agent/runtime-errors"
+import {
+  shouldStopStreamingForRuntimeError,
+  withTerminalError,
+} from "@/agent/runtime-errors"
 import { webMessageTransformer } from "@/agent/message-transformer"
 import { streamChatWithPiAgent } from "@/agent/provider-stream"
 import { buildInitialAgentState } from "@/agent/session-adapter"
@@ -268,6 +271,10 @@ class WorkerAgentRunner {
     }
 
     this.clearFlushTimer()
+    const snapshot = withTerminalError(
+      this.snapshotAgentState(),
+      this.terminalErrorMessage
+    )
 
     const envelope: WorkerSnapshotEnvelope = {
       rotateStreamingAssistantDraft: this.rotateStreamingAssistantDraft
@@ -278,8 +285,7 @@ class WorkerAgentRunner {
           ? [...this.pendingRuntimeErrors]
           : undefined,
       sessionId: this.sessionId,
-      snapshot: this.snapshotAgentState(),
-      terminalErrorMessage: this.terminalErrorMessage,
+      snapshot,
       terminalStatus: this.latestTerminalStatus,
     }
 

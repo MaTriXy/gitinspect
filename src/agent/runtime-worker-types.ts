@@ -15,7 +15,6 @@ export type WorkerSnapshotEnvelope = {
   runtimeErrors?: string[]
   sessionId: string
   snapshot: WorkerSnapshot
-  terminalErrorMessage?: string
   terminalStatus?: "aborted" | "error"
 }
 

@@ -286,3 +286,21 @@ export function shouldStopStreamingForRuntimeError(error: unknown): boolean {
     classified.action === "open-github-settings"
   )
 }
+
+type SnapshotWithError = {
+  error: string | undefined
+}
+
+export function withTerminalError<T extends SnapshotWithError>(
+  snapshot: T,
+  terminalErrorMessage?: string
+): T {
+  if (terminalErrorMessage === undefined || snapshot.error !== undefined) {
+    return snapshot
+  }
+
+  return {
+    ...snapshot,
+    error: terminalErrorMessage,
+  }
+}
