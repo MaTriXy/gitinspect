@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest"
-import type { MessageRow, SessionData } from "@/types/storage"
+import type { MessageRow, SessionData, SessionRuntimeRow } from "@/types/storage"
 import { createEmptyUsage } from "@/types/models"
 import {
   appendSessionNotice,
@@ -9,6 +9,7 @@ import {
 const helpers = vi.hoisted(() => {
   const state = {
     messagesBySession: new Map<string, Array<MessageRow>>(),
+    runtimeBySession: new Map<string, SessionRuntimeRow>(),
     sessions: new Map<string, SessionData>(),
   }
 
@@ -60,9 +61,51 @@ const helpers = vi.hoisted(() => {
     }
   )
 
+  const replaceSessionMessages = vi.fn(
+    async (session: SessionData, messages: Array<MessageRow>): Promise<void> => {
+      state.sessions.set(session.id, session)
+      state.messagesBySession.set(
+        session.id,
+        [...messages].sort((left, right) => left.timestamp - right.timestamp)
+      )
+    }
+  )
+
+  const getSessionRuntime = vi.fn(
+    async (sessionId: string): Promise<SessionRuntimeRow | undefined> =>
+      state.runtimeBySession.get(sessionId)
+  )
+
+  const deleteSessionLease = vi.fn(async (_sessionId: string): Promise<void> => {})
+
+  const loadSessionLeaseState = vi.fn(
+    async () => ({ kind: "none" as const })
+  )
+
+  const markTurnInterrupted = vi.fn(
+    async (params: {
+      lastError: string
+      sessionId: string
+    }): Promise<SessionRuntimeRow> => {
+      const next: SessionRuntimeRow = {
+        lastError: params.lastError,
+        sessionId: params.sessionId,
+        status: "interrupted",
+        updatedAt: "2026-03-24T12:00:00.000Z",
+      }
+      state.runtimeBySession.set(params.sessionId, next)
+      return next
+    }
+  )
+
   return {
+    deleteSessionLease,
+    getSessionRuntime,
     loadSessionWithMessages,
+    loadSessionLeaseState,
+    markTurnInterrupted,
     putSessionAndMessages,
+    replaceSessionMessages,
     state,
   }
 })
@@ -79,7 +122,18 @@ vi.mock("@/sessions/session-service", () => ({
 }))
 
 vi.mock("@/db/schema", () => ({
+  deleteSessionLease: helpers.deleteSessionLease,
+  getSessionRuntime: helpers.getSessionRuntime,
   putSessionAndMessages: helpers.putSessionAndMessages,
+  replaceSessionMessages: helpers.replaceSessionMessages,
+}))
+
+vi.mock("@/db/session-leases", () => ({
+  loadSessionLeaseState: helpers.loadSessionLeaseState,
+}))
+
+vi.mock("@/db/session-runtime", () => ({
+  markTurnInterrupted: helpers.markTurnInterrupted,
 }))
 
 function buildSession(overrides: Partial<SessionData> = {}): SessionData {
@@ -133,12 +187,52 @@ function buildUserMessage(): MessageRow {
   } as MessageRow
 }
 
+function buildToolResultMessage(
+  overrides: Partial<MessageRow> = {}
+): MessageRow {
+  return {
+    content: [{ text: "README contents", type: "text" }],
+    id: "tool-result-1",
+    isError: false,
+    parentAssistantId: "assistant-1",
+    role: "toolResult",
+    sessionId: "session-1",
+    status: "completed",
+    timestamp: 3,
+    toolCallId: "call-1",
+    toolName: "read",
+    ...overrides,
+  } as MessageRow
+}
+
 describe("session-notices", () => {
   beforeEach(() => {
     helpers.state.messagesBySession.clear()
+    helpers.state.runtimeBySession.clear()
     helpers.state.sessions.clear()
+    helpers.deleteSessionLease.mockReset()
+    helpers.getSessionRuntime.mockReset()
     helpers.loadSessionWithMessages.mockReset()
+    helpers.loadSessionLeaseState.mockReset()
+    helpers.markTurnInterrupted.mockReset()
     helpers.putSessionAndMessages.mockReset()
+    helpers.replaceSessionMessages.mockReset()
+    helpers.getSessionRuntime.mockImplementation(
+      async (sessionId: string) => helpers.state.runtimeBySession.get(sessionId)
+    )
+    helpers.loadSessionLeaseState.mockImplementation(
+      async () => ({ kind: "none" as const })
+    )
+    helpers.markTurnInterrupted.mockImplementation(async (params) => {
+      const next: SessionRuntimeRow = {
+        lastError: params.lastError,
+        sessionId: params.sessionId,
+        status: "interrupted",
+        updatedAt: "2026-03-24T12:00:00.000Z",
+      }
+      helpers.state.runtimeBySession.set(params.sessionId, next)
+      return next
+    })
   })
 
   it("dedupes persisted notices", async () => {
@@ -179,7 +273,7 @@ describe("session-notices", () => {
     await reconcileInterruptedSession("session-1")
     await reconcileInterruptedSession("session-1")
 
-    expect(helpers.putSessionAndMessages).toHaveBeenCalledTimes(1)
+    expect(helpers.replaceSessionMessages).toHaveBeenCalledTimes(1)
     expect(helpers.state.sessions.get("session-1")).toMatchObject({
       isStreaming: false,
     })
@@ -225,7 +319,7 @@ describe("session-notices", () => {
 
     await reconcileInterruptedSession("session-1")
 
-    expect(helpers.putSessionAndMessages).toHaveBeenCalledTimes(1)
+    expect(helpers.replaceSessionMessages).toHaveBeenCalledTimes(1)
     expect(helpers.state.sessions.get("session-1")).toMatchObject({
       isStreaming: false,
     })
@@ -240,6 +334,67 @@ describe("session-notices", () => {
           id: "assistant-1",
           role: "assistant",
           status: "error",
+        }),
+      ])
+    )
+  })
+
+  it("drops orphan tool results during interruption recovery", async () => {
+    helpers.state.sessions.set(
+      "session-1",
+      buildSession({
+        isStreaming: true,
+      })
+    )
+    helpers.state.messagesBySession.set("session-1", [
+      buildUserMessage(),
+      buildStreamingAssistant({
+        content: [{ text: "", type: "text" }],
+      }),
+      buildToolResultMessage(),
+    ])
+
+    await reconcileInterruptedSession("session-1")
+
+    expect(
+      helpers.state.messagesBySession
+        .get("session-1")
+        ?.some((message) => message.role === "toolResult")
+    ).toBe(false)
+  })
+
+  it("keeps matching tool results during interruption recovery", async () => {
+    helpers.state.sessions.set(
+      "session-1",
+      buildSession({
+        isStreaming: true,
+      })
+    )
+    helpers.state.messagesBySession.set("session-1", [
+      buildUserMessage(),
+      buildStreamingAssistant({
+        content: [
+          { text: "Reading...", type: "text" },
+          {
+            arguments: { path: "README.md" },
+            id: "call-1",
+            name: "read",
+            type: "toolCall",
+          },
+        ],
+      }),
+      buildToolResultMessage(),
+    ])
+
+    await reconcileInterruptedSession("session-1")
+
+    expect(
+      helpers.state.messagesBySession.get("session-1")
+    ).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          role: "toolResult",
+          toolCallId: "call-1",
         }),
       ])
     )

@@ -1,5 +1,9 @@
 import * as React from "react"
-import { runtimeClient } from "@/agent/runtime-client"
+import {
+  runtimeClient,
+  type InterruptedResumeMode,
+} from "@/agent/runtime-client"
+import type { RuntimeTurnTrace } from "@/lib/runtime-debug"
 
 export function useRuntimeSession(sessionId: string | undefined) {
   const runMutation = React.useEffectEvent(
@@ -12,11 +16,13 @@ export function useRuntimeSession(sessionId: string | undefined) {
     }
   )
 
-  const send = React.useEffectEvent(async (content: string) => {
-    await runMutation(async (currentSessionId) => {
-      await runtimeClient.startTurn(currentSessionId, content)
-    })
-  })
+  const send = React.useEffectEvent(
+    async (content: string, trace?: RuntimeTurnTrace) => {
+      await runMutation(async (currentSessionId) => {
+        await runtimeClient.startTurn(currentSessionId, content, trace)
+      })
+    }
+  )
 
   const abort = React.useEffectEvent(async () => {
     if (!sessionId) {
@@ -24,6 +30,14 @@ export function useRuntimeSession(sessionId: string | undefined) {
     }
     await runtimeClient.abort(sessionId)
   })
+
+  const resumeInterrupted = React.useEffectEvent(
+    async (mode: InterruptedResumeMode) => {
+      await runMutation(async (currentSessionId) => {
+        await runtimeClient.resumeInterruptedTurn(currentSessionId, mode)
+      })
+    }
+  )
 
   const setModelSelection = React.useEffectEvent(
     async (
@@ -55,6 +69,7 @@ export function useRuntimeSession(sessionId: string | undefined) {
 
   return {
     abort,
+    resumeInterrupted,
     send,
     setModelSelection,
     setThinkingLevel,

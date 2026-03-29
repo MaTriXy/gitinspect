@@ -4,14 +4,14 @@ import * as React from "react"
 import { useNavigate, useSearch } from "@tanstack/react-router"
 import { useLiveQuery } from "dexie-react-hooks"
 import { toast } from "sonner"
-import { getFoldedToolResultIds } from "./chat-adapter"
+import { getAssistantText, getFoldedToolResultIds } from "./chat-adapter"
 import { ChatComposer } from "./chat-composer"
 import { ChatEmptyState } from "./chat-empty-state"
 import { ChatMessage as ChatMessageBlock } from "./chat-message"
 import { RepoCombobox } from "./repo-combobox"
 import type { RepoComboboxHandle } from "./repo-combobox"
 import type { ProviderGroupId, ThinkingLevel } from "@/types/models"
-import type { ChatMessage } from "@/types/chat"
+import type { AssistantMessage, ChatMessage } from "@/types/chat"
 import type { RepoSource, RepoTarget, SessionData } from "@/types/storage"
 import {
   Conversation,
@@ -22,10 +22,17 @@ import { StatusShimmer } from "@/components/ai-elements/shimmer"
 import { ProgressiveBlur } from "@/components/ui/progressive-blur"
 import { Icons } from "@/components/icons"
 import { copySessionToClipboard } from "@/lib/copy-session-markdown"
-import { touchRepository } from "@/db/schema"
+import { getSessionRuntime, touchRepository } from "@/db/schema"
 import { runtimeClient } from "@/agent/runtime-client"
 import { getRuntimeCommandErrorMessage } from "@/agent/runtime-command-errors"
 import { useRuntimeSession } from "@/hooks/use-runtime-session"
+import { useSessionOwnership } from "@/hooks/use-session-ownership"
+import {
+  bindRuntimeTrace,
+  clearRuntimeTrace,
+  createRuntimeTrace,
+  getRuntimeTrace,
+} from "@/lib/runtime-debug"
 import { getCanonicalProvider, getDefaultProviderGroup } from "@/models/catalog"
 import { normalizeRepoSource, resolveRepoSource } from "@/repo/settings"
 import {
@@ -33,10 +40,17 @@ import {
   createSessionForRepo,
   persistLastUsedSessionSettings,
   resolveProviderDefaults,
-  sessionDestination,
 } from "@/sessions/session-actions"
 import { reconcileInterruptedSession } from "@/sessions/session-notices"
 import { loadSessionWithMessages } from "@/sessions/session-service"
+import {
+  deriveActiveSessionViewState,
+  deriveBannerState,
+  deriveComposerState,
+  deriveRecoveryIntent,
+  deriveResumeAction,
+  shouldDisplayConversationStreaming,
+} from "@/sessions/session-view-state"
 
 type EmptyChatDraft = {
   model: string
@@ -51,10 +65,15 @@ type LoadedSessionState =
 
 type ChatPanelMode = "empty" | "messages" | "starting" | "streaming_pending"
 
-const STALE_STREAM_RECOVERY_MS = 30 * 60_000
-
 export interface ChatProps {
   repoSource?: RepoTarget
+  sessionId?: string
+}
+
+function isSystemNotice(
+  message: ChatMessage
+): message is Extract<ChatMessage, { role: "system" }> {
+  return message.role === "system"
 }
 
 function LoadingState({ label }: { label: string }) {
@@ -63,42 +82,6 @@ function LoadingState({ label }: { label: string }) {
       {label}
     </div>
   )
-}
-
-function isSameRepoSource(
-  left: RepoSource | undefined,
-  right: RepoSource | undefined
-) {
-  if (!left || !right) {
-    return left === right
-  }
-
-  return (
-    left.owner === right.owner &&
-    left.repo === right.repo &&
-    left.ref === right.ref
-  )
-}
-
-function repoDestination(repoSource: RepoSource) {
-  if (repoSource.ref === "main") {
-    return {
-      params: {
-        owner: repoSource.owner,
-        repo: repoSource.repo,
-      },
-      to: "/$owner/$repo" as const,
-    }
-  }
-
-  return {
-    params: {
-      _splat: repoSource.ref,
-      owner: repoSource.owner,
-      repo: repoSource.repo,
-    },
-    to: "/$owner/$repo/$" as const,
-  }
 }
 
 function getChatPanelMode(input: {
@@ -126,32 +109,81 @@ function getChatPanelMode(input: {
   return "messages"
 }
 
+function formatRelativeProgress(value: string | undefined): string | undefined {
+  if (!value) {
+    return undefined
+  }
+
+  const timestamp = Date.parse(value)
+
+  if (!Number.isFinite(timestamp)) {
+    return undefined
+  }
+
+  const elapsedMs = Math.max(0, Date.now() - timestamp)
+  const elapsedMinutes = Math.floor(elapsedMs / 60_000)
+
+  if (elapsedMinutes < 1) {
+    return "just now"
+  }
+
+  if (elapsedMinutes < 60) {
+    return `${elapsedMinutes}m ago`
+  }
+
+  const elapsedHours = Math.floor(elapsedMinutes / 60)
+
+  if (elapsedHours < 24) {
+    return `${elapsedHours}h ago`
+  }
+
+  const elapsedDays = Math.floor(elapsedHours / 24)
+  return `${elapsedDays}d ago`
+}
+
+function getLastAssistantMessage(
+  messages: ReadonlyArray<ChatMessage>
+): AssistantMessage | undefined {
+  return [...messages]
+    .reverse()
+    .find(
+      (message): message is AssistantMessage => message.role === "assistant"
+    )
+}
+
 export function Chat(props: ChatProps) {
   const navigate = useNavigate()
   const search = useSearch({ strict: false })
-  const sessionId =
-    typeof search.session === "string" ? search.session : undefined
-  const initialQuery =
-    typeof search.initialQuery === "string" && search.initialQuery.trim().length > 0
-      ? search.initialQuery
+  const settings =
+    typeof search.settings === "string" ? search.settings : undefined
+  const sidebar = search.sidebar === "open" ? "open" : undefined
+  const q =
+    typeof search.q === "string" && search.q.trim().length > 0
+      ? search.q
       : undefined
-  const loadedSessionState = useLiveQuery(async (): Promise<LoadedSessionState> => {
-    if (!sessionId) {
-      return { kind: "none" }
-    }
+  const loadedSessionState =
+    useLiveQuery(async (): Promise<LoadedSessionState> => {
+      if (!props.sessionId) {
+        return { kind: "none" }
+      }
 
-    const loaded = await loadSessionWithMessages(sessionId)
+      const loaded = await loadSessionWithMessages(props.sessionId)
 
-    if (!loaded) {
-      return { kind: "missing" }
-    }
+      if (!loaded) {
+        return { kind: "missing" }
+      }
 
-    return {
-      kind: "active",
-      messages: loaded.messages,
-      session: loaded.session,
-    }
-  }, [sessionId])
+      return {
+        kind: "active",
+        messages: loaded.messages,
+        session: loaded.session,
+      }
+    }, [props.sessionId])
+  const sessionRuntime = useLiveQuery(
+    async () =>
+      props.sessionId ? await getSessionRuntime(props.sessionId) : undefined,
+    [props.sessionId]
+  )
   const defaults = useLiveQuery(async () => {
     const resolved = await resolveProviderDefaults()
 
@@ -161,16 +193,27 @@ export function Chat(props: ChatProps) {
       thinkingLevel: "medium" as ThinkingLevel,
     } satisfies EmptyChatDraft
   }, [])
-  const [draft, setDraft] = React.useState<EmptyChatDraft | undefined>(undefined)
+  const [draft, setDraft] = React.useState<EmptyChatDraft | undefined>(
+    undefined
+  )
   const [isStartingSession, setIsStartingSession] = React.useState(false)
   const [resolvedRepoSource, setResolvedRepoSource] = React.useState<
     RepoSource | undefined
   >(() => normalizeRepoSource(props.repoSource))
   const [repoResolutionFailed, setRepoResolutionFailed] = React.useState(false)
-  const runtime = useRuntimeSession(sessionId)
+  const runtime = useRuntimeSession(props.sessionId)
+  const ownership = useSessionOwnership(
+    loadedSessionState?.kind === "active"
+      ? loadedSessionState.session.id
+      : undefined
+  )
   const observerRef = React.useRef<ResizeObserver | null>(null)
   const repoComboboxRef = React.useRef<RepoComboboxHandle>(null)
-  const repairedVisibilityRef = React.useRef(false)
+  const recoveryInFlightRef = React.useRef(false)
+  const surfacedSystemNoticeFingerprintsRef = React.useRef(new Set<string>())
+  const surfacedSystemNoticeSessionIdRef = React.useRef<string | undefined>(
+    undefined
+  )
   const [promptHeight, setPromptHeight] = React.useState(0)
 
   const promptRef = React.useCallback((node: HTMLDivElement | null) => {
@@ -236,13 +279,35 @@ export function Chat(props: ChatProps) {
     props.repoSource?.token,
   ])
 
+  const activeSession =
+    loadedSessionState?.kind === "active"
+      ? loadedSessionState.session
+      : undefined
+  const displayRepoSource = activeSession?.repoSource ?? resolvedRepoSource
+
   React.useEffect(() => {
-    if (!resolvedRepoSource) {
+    if (loadedSessionState?.kind !== "active") {
       return
     }
 
-    void touchRepository(resolvedRepoSource)
-  }, [resolvedRepoSource])
+    getRuntimeTrace(loadedSessionState.session.id)?.markOnce(
+      "ui.session_loaded",
+      "ui.session_loaded",
+      {
+        isStreaming: loadedSessionState.session.isStreaming,
+        messageCount: loadedSessionState.messages.length,
+        sessionId: loadedSessionState.session.id,
+      }
+    )
+  }, [loadedSessionState])
+
+  React.useEffect(() => {
+    if (!displayRepoSource) {
+      return
+    }
+
+    void touchRepository(displayRepoSource)
+  }, [displayRepoSource])
 
   React.useEffect(() => {
     if (!defaults) {
@@ -252,12 +317,6 @@ export function Chat(props: ChatProps) {
     setDraft((currentDraft) => currentDraft ?? defaults)
   }, [defaults])
 
-  React.useEffect(() => {
-    repairedVisibilityRef.current = false
-  }, [sessionId])
-
-  const activeSession =
-    loadedSessionState?.kind === "active" ? loadedSessionState.session : undefined
   const messages =
     loadedSessionState?.kind === "active" ? loadedSessionState.messages : []
   const hasAssistantMessage = React.useMemo(
@@ -268,34 +327,206 @@ export function Chat(props: ChatProps) {
     () => getFoldedToolResultIds(messages),
     [messages]
   )
-  const lastAssistantMessageId = React.useMemo(
-    () =>
-      [...messages].reverse().find((message) => message.role === "assistant")?.id,
+  const lastAssistantMessage = React.useMemo(
+    () => getLastAssistantMessage(messages),
     [messages]
   )
+  const lastAssistantMessageId = React.useMemo(
+    () => lastAssistantMessage?.id,
+    [lastAssistantMessage]
+  )
+  const hasPartialAssistantText = React.useMemo(
+    () =>
+      lastAssistantMessage !== undefined &&
+      getAssistantText(lastAssistantMessage).trim().length > 0,
+    [lastAssistantMessage, sessionRuntime]
+  )
+  const activeSessionViewState = React.useMemo(
+    () =>
+      activeSession
+        ? deriveActiveSessionViewState({
+            hasLocalRunner: runtimeClient.hasActiveTurn(activeSession.id),
+            hasPartialAssistantText,
+            lastProgressAt: sessionRuntime?.lastProgressAt,
+            leaseState: ownership,
+            runtimeStatus: sessionRuntime?.status,
+            sessionIsStreaming: activeSession.isStreaming,
+          })
+        : undefined,
+    [
+      activeSession,
+      hasPartialAssistantText,
+      ownership,
+      sessionRuntime?.lastProgressAt,
+      sessionRuntime?.status,
+    ]
+  )
+
+  React.useEffect(() => {
+    if (!activeSession?.id || !lastAssistantMessageId) {
+      return
+    }
+
+    const trace = getRuntimeTrace(activeSession.id)
+
+    if (!trace) {
+      return
+    }
+
+    trace.markOnce("ui.first_assistant_message", "ui.first_assistant_message", {
+      messageId: lastAssistantMessageId,
+      sessionId: activeSession.id,
+    })
+
+    if (!hasPartialAssistantText || !lastAssistantMessage) {
+      return
+    }
+
+    trace.markOnce(
+      "ui.first_assistant_text_render",
+      "ui.first_assistant_text_render",
+      {
+        messageId: lastAssistantMessageId,
+        sessionId: activeSession.id,
+        textLength: getAssistantText(lastAssistantMessage).trim().length,
+      }
+    )
+  }, [
+    activeSession?.id,
+    hasPartialAssistantText,
+    lastAssistantMessage,
+    lastAssistantMessageId,
+  ])
+
+  React.useEffect(() => {
+    if (surfacedSystemNoticeSessionIdRef.current === activeSession?.id) {
+      return
+    }
+
+    surfacedSystemNoticeSessionIdRef.current = activeSession?.id
+    surfacedSystemNoticeFingerprintsRef.current = new Set(
+      messages.filter(isSystemNotice).map((message) => message.fingerprint)
+    )
+  }, [activeSession?.id, messages])
+
+  React.useEffect(() => {
+    if (!activeSession?.id) {
+      return
+    }
+
+    if (surfacedSystemNoticeSessionIdRef.current !== activeSession.id) {
+      return
+    }
+
+    const seenFingerprints = surfacedSystemNoticeFingerprintsRef.current
+    const unseenErrors = messages.filter(
+      (message): message is Extract<ChatMessage, { role: "system" }> =>
+        isSystemNotice(message) &&
+        message.severity === "error" &&
+        !seenFingerprints.has(message.fingerprint)
+    )
+
+    for (const message of unseenErrors) {
+      seenFingerprints.add(message.fingerprint)
+      toast.error(getRuntimeCommandErrorMessage(new Error(message.message)))
+    }
+  }, [activeSession?.id, messages])
+
+  const recoveryIntent = React.useMemo(
+    () =>
+      activeSessionViewState
+        ? deriveRecoveryIntent(activeSessionViewState)
+        : "none",
+    [activeSessionViewState]
+  )
+  const bannerState = React.useMemo(
+    () =>
+      activeSessionViewState
+        ? deriveBannerState(activeSessionViewState)
+        : undefined,
+    [activeSessionViewState]
+  )
+  const resumeAction = React.useMemo(
+    () =>
+      activeSessionViewState
+        ? deriveResumeAction(activeSessionViewState)
+        : undefined,
+    [activeSessionViewState]
+  )
+  const activeComposerState = React.useMemo(
+    () =>
+      activeSessionViewState
+        ? deriveComposerState(activeSessionViewState)
+        : undefined,
+    [activeSessionViewState]
+  )
+  const lastProgressLabel = React.useMemo(
+    () => formatRelativeProgress(sessionRuntime?.lastProgressAt),
+    [sessionRuntime?.lastProgressAt]
+  )
+  const displayConversationStreaming = React.useMemo(
+    () =>
+      activeSessionViewState
+        ? shouldDisplayConversationStreaming(activeSessionViewState)
+        : false,
+    [activeSessionViewState]
+  )
+
+  const maybeRecoverInterruptedSession = React.useEffectEvent(
+    async (trigger: "mount" | "visibility") => {
+      if (!activeSession || recoveryIntent !== "run-now") {
+        return
+      }
+
+      if (recoveryInFlightRef.current) {
+        return
+      }
+
+      recoveryInFlightRef.current = true
+
+      try {
+        const outcome = await reconcileInterruptedSession(activeSession.id, {
+          hasLocalRunner: runtimeClient.hasActiveTurn(activeSession.id),
+        })
+
+        if (outcome.kind === "reconciled") {
+          console.info("[gitinspect:runtime] interrupted_session_reconciled", {
+            lastProgressAt: outcome.lastProgressAt,
+            sessionId: activeSession.id,
+            trigger,
+          })
+        }
+      } catch (error) {
+        console.error("[gitinspect:runtime] stale_stream_reconcile_failed", {
+          error,
+          sessionId: activeSession.id,
+          trigger,
+        })
+      } finally {
+        recoveryInFlightRef.current = false
+      }
+    }
+  )
+
+  React.useEffect(() => {
+    if (!activeSession || recoveryIntent !== "run-now") {
+      return
+    }
+
+    void maybeRecoverInterruptedSession("mount")
+  }, [activeSession?.id, maybeRecoverInterruptedSession, recoveryIntent])
 
   React.useEffect(() => {
     const handleVisibilityChange = () => {
       if (document.visibilityState !== "visible") {
-        repairedVisibilityRef.current = false
         return
       }
 
-      if (
-        repairedVisibilityRef.current ||
-        !activeSession?.isStreaming ||
-        Date.now() - Date.parse(activeSession.updatedAt) < STALE_STREAM_RECOVERY_MS
-      ) {
+      if (!activeSession || recoveryIntent !== "run-now") {
         return
       }
 
-      repairedVisibilityRef.current = true
-      void reconcileInterruptedSession(activeSession.id).catch((error) => {
-        console.error("[gitinspect:runtime] stale_stream_reconcile_failed", {
-          error,
-          sessionId: activeSession.id,
-        })
-      })
+      void maybeRecoverInterruptedSession("visibility")
     }
 
     document.addEventListener("visibilitychange", handleVisibilityChange)
@@ -303,54 +534,23 @@ export function Chat(props: ChatProps) {
     return () => {
       document.removeEventListener("visibilitychange", handleVisibilityChange)
     }
-  }, [activeSession?.id, activeSession?.isStreaming, activeSession?.updatedAt])
+  }, [activeSession?.id, maybeRecoverInterruptedSession, recoveryIntent])
 
   React.useEffect(() => {
     if (loadedSessionState?.kind !== "missing") {
       return
     }
 
-    if (props.repoSource && !resolvedRepoSource) {
-      return
-    }
-
     void navigate({
-      ...(resolvedRepoSource
-        ? repoDestination(resolvedRepoSource)
-        : { to: "/chat" as const }),
       replace: true,
-      search: (prev) => ({
-        initialQuery,
-        session: undefined,
-        settings: prev.settings,
-        sidebar: prev.sidebar,
-      }),
+      search: {
+        q: undefined,
+        settings,
+        sidebar,
+      },
+      to: "/chat",
     })
-  }, [initialQuery, loadedSessionState, navigate, props.repoSource, resolvedRepoSource])
-
-  React.useEffect(() => {
-    if (
-      !resolvedRepoSource ||
-      !activeSession ||
-      isSameRepoSource(activeSession.repoSource, resolvedRepoSource)
-    ) {
-      return
-    }
-
-    void navigate({
-      ...sessionDestination({
-        id: activeSession.id,
-        repoSource: activeSession.repoSource,
-      }),
-      replace: true,
-      search: (prev) => ({
-        initialQuery: undefined,
-        session: activeSession.id,
-        settings: prev.settings,
-        sidebar: prev.sidebar,
-      }),
-    })
-  }, [activeSession, navigate, resolvedRepoSource])
+  }, [loadedSessionState, navigate, settings, sidebar])
 
   const persistDraft = React.useCallback((nextDraft: EmptyChatDraft) => {
     setDraft(nextDraft)
@@ -378,6 +578,14 @@ export function Chat(props: ChatProps) {
         return
       }
 
+      const trace = createRuntimeTrace("first-send", {
+        contentLength: content.trim().length,
+        hasRepoSource: Boolean(resolvedRepoSource),
+        providerGroup: draft.providerGroup,
+        thinkingLevel: draft.thinkingLevel,
+      })
+      let sessionId: string | undefined
+
       setIsStartingSession(true)
 
       try {
@@ -387,6 +595,10 @@ export function Chat(props: ChatProps) {
           providerGroup: draft.providerGroup,
           thinkingLevel: draft.thinkingLevel,
         }
+        trace.startPhase("ui.session.create", {
+          model: base.model,
+          providerGroup: base.providerGroup,
+        })
         const session = resolvedRepoSource
           ? await createSessionForRepo({
               base,
@@ -395,23 +607,62 @@ export function Chat(props: ChatProps) {
               repo: resolvedRepoSource.repo,
             })
           : await createSessionForChat(base)
+        sessionId = session.id
 
+        trace.endPhase("ui.session.create", {
+          hasRepoSource: Boolean(session.repoSource),
+          sessionId: session.id,
+        })
+        bindRuntimeTrace(session.id, trace)
+
+        trace.startPhase("ui.runtime.startInitialTurn", {
+          sessionId: session.id,
+        })
         await runtimeClient.startInitialTurn(session, content)
+        trace.endPhase("ui.runtime.startInitialTurn", {
+          sessionId: session.id,
+        })
+        trace.startPhase("ui.router.navigate", {
+          sessionId: session.id,
+        })
         await navigate({
-          ...sessionDestination({
-            id: session.id,
-            repoSource: session.repoSource,
-          }),
-          search: (prev) => ({
-            initialQuery: undefined,
-            session: session.id,
-            settings: prev.settings,
-            sidebar: prev.sidebar,
-          }),
+          params: {
+            sessionId: session.id,
+          },
+          search: {
+            q: undefined,
+            settings,
+            sidebar,
+          },
+          to: "/chat/$sessionId",
+        })
+        trace.endPhase("ui.router.navigate", {
+          sessionId: session.id,
+        })
+        trace.checkpoint("ui.awaiting_first_delta", {
+          sessionId: session.id,
         })
 
         void persistLastUsedSessionSettings(session)
       } catch (error) {
+        trace.endPhase("ui.session.create", {
+          error: error instanceof Error ? error.message : String(error),
+          sessionId,
+        })
+        trace.endPhase("ui.runtime.startInitialTurn", {
+          error: error instanceof Error ? error.message : String(error),
+          sessionId,
+        })
+        trace.endPhase("ui.router.navigate", {
+          error: error instanceof Error ? error.message : String(error),
+          sessionId,
+        })
+        trace.end({
+          error: error instanceof Error ? error.message : String(error),
+          sessionId,
+          status: "failed",
+        })
+        clearRuntimeTrace(sessionId)
         reportRuntimeFailure(
           error instanceof Error ? error : new Error(String(error))
         )
@@ -425,15 +676,54 @@ export function Chat(props: ChatProps) {
       navigate,
       reportRuntimeFailure,
       resolvedRepoSource,
+      settings,
+      sidebar,
     ]
   )
 
   const handleSend = React.useCallback(
     async (content: string) => {
       if (activeSession) {
+        if (!activeComposerState?.canSend) {
+          if (activeComposerState?.disabledReason) {
+            toast.error(activeComposerState.disabledReason)
+          }
+          return
+        }
+
+        const trace = bindRuntimeTrace(
+          activeSession.id,
+          createRuntimeTrace("turn", {
+            contentLength: content.trim().length,
+            messageCount: messages.length,
+            providerGroup: activeSession.providerGroup,
+            sessionId: activeSession.id,
+            thinkingLevel: activeSession.thinkingLevel,
+          })
+        )
+
         try {
+          trace.startPhase("ui.runtime.startTurn", {
+            sessionId: activeSession.id,
+          })
           await runtime.send(content)
+          trace.endPhase("ui.runtime.startTurn", {
+            sessionId: activeSession.id,
+          })
+          trace.checkpoint("ui.awaiting_first_delta", {
+            sessionId: activeSession.id,
+          })
         } catch (error) {
+          trace.endPhase("ui.runtime.startTurn", {
+            error: error instanceof Error ? error.message : String(error),
+            sessionId: activeSession.id,
+          })
+          trace.end({
+            error: error instanceof Error ? error.message : String(error),
+            sessionId: activeSession.id,
+            status: "failed",
+          })
+          clearRuntimeTrace(activeSession.id)
           reportRuntimeFailure(
             error instanceof Error ? error : new Error(String(error))
           )
@@ -443,8 +733,29 @@ export function Chat(props: ChatProps) {
 
       await handleFirstSend(content)
     },
-    [activeSession, handleFirstSend, reportRuntimeFailure, runtime]
+    [
+      activeComposerState,
+      activeSession,
+      handleFirstSend,
+      messages.length,
+      reportRuntimeFailure,
+      runtime,
+    ]
   )
+
+  const handleResumeInterrupted = React.useCallback(async () => {
+    if (!resumeAction) {
+      return
+    }
+
+    try {
+      await runtime.resumeInterrupted(resumeAction.mode)
+    } catch (error) {
+      reportRuntimeFailure(
+        error instanceof Error ? error : new Error(String(error))
+      )
+    }
+  }, [reportRuntimeFailure, resumeAction, runtime])
 
   if (loadedSessionState === undefined) {
     return <LoadingState label="Loading session..." />
@@ -454,20 +765,8 @@ export function Chat(props: ChatProps) {
     return <LoadingState label="Loading session..." />
   }
 
-  if (
-    props.repoSource &&
-    !resolvedRepoSource &&
-    !repoResolutionFailed
-  ) {
+  if (props.repoSource && !resolvedRepoSource && !repoResolutionFailed) {
     return <LoadingState label="Loading repository..." />
-  }
-
-  if (
-    resolvedRepoSource &&
-    activeSession &&
-    !isSameRepoSource(activeSession.repoSource, resolvedRepoSource)
-  ) {
-    return <LoadingState label="Loading session..." />
   }
 
   if (!activeSession && !draft) {
@@ -477,23 +776,35 @@ export function Chat(props: ChatProps) {
   const currentModel = activeSession?.model ?? draft?.model ?? ""
   const currentProviderGroup =
     activeSession?.providerGroup ??
-    (activeSession ? getDefaultProviderGroup(activeSession.provider) : undefined) ??
+    (activeSession
+      ? getDefaultProviderGroup(activeSession.provider)
+      : undefined) ??
     draft?.providerGroup ??
-    "opencode-free"
+    "fireworks-free"
   const currentThinkingLevel =
     activeSession?.thinkingLevel ?? draft?.thinkingLevel ?? "medium"
-  const isStreaming = activeSession?.isStreaming ?? isStartingSession
+  const isStreaming =
+    activeSession !== undefined
+      ? (activeComposerState?.isStreaming ?? false)
+      : isStartingSession
+  const composerDisabled =
+    !displayRepoSource || activeComposerState?.disabled === true
+  const composerDisabledReason = !displayRepoSource
+    ? "Select a repository to get started"
+    : activeComposerState?.disabledReason
   const chatPanelMode = getChatPanelMode({
     hasAssistantMessage,
     isStartingSession,
-    isStreaming,
+    isStreaming: displayConversationStreaming || isStartingSession,
     messageCount: messages.length,
   })
 
   return (
     <div
       className="relative flex size-full min-h-0 flex-col overflow-hidden"
-      style={{ "--chat-input-height": `${promptHeight}px` } as React.CSSProperties}
+      style={
+        { "--chat-input-height": `${promptHeight}px` } as React.CSSProperties
+      }
     >
       <Conversation className="min-h-0 flex-1">
         <ConversationContent
@@ -501,6 +812,17 @@ export function Chat(props: ChatProps) {
             messages.length === 0 ? "min-h-full" : ""
           }`}
         >
+          {bannerState?.kind === "remote-live" ? (
+            <div className="mb-4 rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-sm text-amber-800 dark:text-amber-200">
+              Read-only mirror. This session is active in another tab.
+              {lastProgressLabel ? ` Last progress ${lastProgressLabel}.` : ""}
+            </div>
+          ) : bannerState?.kind === "remote-stale" ? (
+            <div className="mb-4 rounded-md border border-border bg-muted px-3 py-2 text-sm text-muted-foreground">
+              Read-only mirror. Another tab still owns this streaming session.
+              {lastProgressLabel ? ` Last progress ${lastProgressLabel}.` : ""}
+            </div>
+          ) : null}
           {chatPanelMode === "starting" ? (
             <div className="flex min-h-[30vh] items-center justify-center">
               <StatusShimmer>Starting session...</StatusShimmer>
@@ -513,7 +835,7 @@ export function Chat(props: ChatProps) {
             <ChatEmptyState
               onSuggestionClick={(text) => void handleSend(text)}
               onSwitchRepo={() => repoComboboxRef.current?.focusAndClear()}
-              repoSource={resolvedRepoSource}
+              repoSource={displayRepoSource}
             />
           ) : (
             messages.map((message, index) => {
@@ -528,7 +850,7 @@ export function Chat(props: ChatProps) {
                 <ChatMessageBlock
                   followingMessages={messages.slice(index + 1)}
                   isStreamingReasoning={
-                    activeSession?.isStreaming === true &&
+                    displayConversationStreaming &&
                     message.role === "assistant" &&
                     lastAssistantMessageId === message.id
                   }
@@ -557,8 +879,8 @@ export function Chat(props: ChatProps) {
           <div className="pointer-events-auto flex items-center justify-between pb-2">
             <RepoCombobox
               ref={repoComboboxRef}
-              autoFocus={!sessionId && !resolvedRepoSource}
-              repoSource={resolvedRepoSource}
+              autoFocus={!props.sessionId && !displayRepoSource}
+              repoSource={displayRepoSource}
             />
             {messages.length > 0 ? (
               <button
@@ -580,13 +902,46 @@ export function Chat(props: ChatProps) {
 
         <div className="pointer-events-auto bg-background">
           <div className="mx-auto w-full max-w-4xl px-4 pb-4">
+            {bannerState?.kind === "interrupted" &&
+            resumeAction &&
+            activeSession ? (
+              <div className="mb-3 rounded-md border border-border bg-muted px-3 py-3 text-sm text-foreground">
+                <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                  <div>
+                    <div className="font-medium">Response interrupted</div>
+                    <div className="text-muted-foreground">
+                      {bannerState.resumeMode === "continue"
+                        ? "A partial assistant response was saved locally."
+                        : "The last response stopped before any assistant text was saved."}
+                      {lastProgressLabel
+                        ? ` Last progress ${lastProgressLabel}.`
+                        : ""}
+                    </div>
+                  </div>
+                  <button
+                    className="inline-flex items-center justify-center rounded-sm border border-border bg-background px-3 py-2 text-sm font-medium text-foreground transition-colors hover:bg-muted"
+                    onClick={() => {
+                      void handleResumeInterrupted()
+                    }}
+                    type="button"
+                  >
+                    {resumeAction.label}
+                  </button>
+                </div>
+              </div>
+            ) : null}
             <div ref={promptRef}>
               <ChatComposer
-                composerDisabled={!resolvedRepoSource}
-                initialInput={messages.length === 0 ? initialQuery : undefined}
+                composerDisabled={composerDisabled}
+                disabledReason={composerDisabledReason}
+                initialInput={messages.length === 0 ? q : undefined}
                 isStreaming={isStreaming}
                 model={currentModel}
-                onAbort={activeSession ? runtime.abort : () => {}}
+                onAbort={
+                  activeSession && activeComposerState?.canAbort
+                    ? runtime.abort
+                    : () => {}
+                }
                 onSelectModel={(providerGroup, model) => {
                   if (activeSession) {
                     return runtime.setModelSelection(providerGroup, model)

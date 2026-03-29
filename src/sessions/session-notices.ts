@@ -1,14 +1,39 @@
 import { createId } from "@/lib/ids"
 import { getIsoNow } from "@/lib/dates"
 import { buildSystemMessage, classifyRuntimeError } from "@/agent/runtime-errors"
+import { pruneOrphanToolResults } from "@/agent/message-transformer"
 import { toMessageRow } from "@/agent/session-adapter"
 import { StreamInterruptedRuntimeError } from "@/agent/runtime-command-errors"
+import { loadSessionLeaseState } from "@/db/session-leases"
+import { markTurnInterrupted } from "@/db/session-runtime"
 import {
   buildPersistedSession,
   loadSessionWithMessages,
 } from "@/sessions/session-service"
-import { putSessionAndMessages } from "@/db/schema"
+import {
+  deriveActiveSessionViewState,
+  deriveRecoveryIntent,
+  deriveRecoverySkipReason,
+} from "@/sessions/session-view-state"
+import {
+  deleteSessionLease,
+  getSessionRuntime,
+  putSessionAndMessages,
+  replaceSessionMessages,
+} from "@/db/schema"
 import type { MessageRow, SessionData } from "@/types/storage"
+
+export type InterruptedRecoveryResult =
+  | {
+      kind: "noop"
+      lastProgressAt?: string
+      reason:
+        | "local-runner"
+        | "missing-session"
+        | "not-streaming"
+        | "remote-owned"
+    }
+  | { kind: "reconciled"; lastProgressAt?: string }
 
 function isSystemFingerprintRow(
   message: MessageRow,
@@ -85,24 +110,42 @@ export async function appendSessionNotice(
 }
 
 export async function reconcileInterruptedSession(
-  sessionId: string
-): Promise<void> {
-  const loaded = await loadSessionWithMessages(sessionId)
+  sessionId: string,
+  options: { hasLocalRunner?: boolean } = {}
+): Promise<InterruptedRecoveryResult> {
+  const [loaded, leaseState, runtime] = await Promise.all([
+    loadSessionWithMessages(sessionId),
+    loadSessionLeaseState(sessionId),
+    getSessionRuntime(sessionId),
+  ])
+  const lastProgressAt = runtime?.lastProgressAt
 
-  if (!loaded || !loaded.session.isStreaming) {
-    return
+  if (!loaded) {
+    return { kind: "noop", lastProgressAt, reason: "missing-session" }
+  }
+
+  const state = deriveActiveSessionViewState({
+    hasLocalRunner: options.hasLocalRunner === true,
+    hasPartialAssistantText: false,
+    lastProgressAt,
+    leaseState,
+    runtimeStatus: runtime?.status,
+    sessionIsStreaming: loaded.session.isStreaming,
+  })
+
+  if (deriveRecoveryIntent(state) !== "run-now") {
+    return {
+      kind: "noop",
+      lastProgressAt,
+      reason: deriveRecoverySkipReason(state),
+    }
   }
 
   const interruption = new StreamInterruptedRuntimeError()
   const classified = classifyRuntimeError(interruption)
-  const rewrittenMessages = rewriteStreamingAssistantRows(
-    loaded.messages,
-    classified.message
+  const rewrittenMessages = pruneOrphanToolResults(
+    rewriteStreamingAssistantRows(loaded.messages, classified.message)
   )
-  const changedMessages = rewrittenMessages.filter((message, index) => {
-    const previous = loaded.messages[index]
-    return JSON.stringify(previous) !== JSON.stringify(message)
-  })
   const hasNotice = rewrittenMessages.some((message) =>
     isSystemFingerprintRow(message, classified.fingerprint)
   )
@@ -115,12 +158,7 @@ export async function reconcileInterruptedSession(
           buildSystemMessage(classified, createId(), Date.now())
         ),
       ]
-  const persistedChanges =
-    hasNotice || nextMessages.length === rewrittenMessages.length
-      ? changedMessages
-      : [nextMessages[nextMessages.length - 1], ...changedMessages]
-
-  await putSessionAndMessages(
+  await replaceSessionMessages(
     buildPersistedSession(
       {
         ...loaded.session,
@@ -130,6 +168,17 @@ export async function reconcileInterruptedSession(
       },
       nextMessages
     ),
-    persistedChanges
+    nextMessages
   )
+
+  await markTurnInterrupted({
+    lastError: classified.message,
+    sessionId,
+  })
+
+  if (leaseState.kind === "owned") {
+    await deleteSessionLease(sessionId)
+  }
+
+  return { kind: "reconciled", lastProgressAt }
 }

@@ -60,6 +60,15 @@ const putSessionAndMessages = vi.fn(
     mergeSessionMessages(session.id, messages)
   }
 )
+const replaceSessionMessages = vi.fn(
+  async (session: SessionData, messages: Array<MessageRow>): Promise<void> => {
+    state.sessions.set(session.id, session)
+    state.messagesBySession.set(
+      session.id,
+      [...messages].sort((left, right) => left.timestamp - right.timestamp)
+    )
+  }
+)
 const recordUsage = vi.fn(
   async (
     _usage: SessionData["usage"],
@@ -138,7 +147,32 @@ vi.mock("@/db/schema", () => ({
   putMessages,
   putSession,
   putSessionAndMessages,
+  replaceSessionMessages,
   recordUsage,
+}))
+
+const markTurnStarted = vi.fn(async () => ({
+  sessionId: "session-1",
+  status: "streaming" as const,
+  updatedAt: "2026-03-24T12:00:00.000Z",
+}))
+const markTurnProgress = vi.fn(async () => ({
+  sessionId: "session-1",
+  status: "streaming" as const,
+  updatedAt: "2026-03-24T12:00:00.000Z",
+}))
+const markTurnCompleted = vi.fn(async () => ({
+  sessionId: "session-1",
+  status: "completed" as const,
+  updatedAt: "2026-03-24T12:00:00.000Z",
+}))
+const clearSessionRuntime = vi.fn(async () => {})
+
+vi.mock("@/db/session-runtime", () => ({
+  clearSessionRuntime,
+  markTurnCompleted,
+  markTurnProgress,
+  markTurnStarted,
 }))
 
 vi.mock("@mariozechner/pi-agent-core", () => ({
@@ -243,7 +277,12 @@ describe("AgentHost persistence", () => {
     putMessages.mockClear()
     putSession.mockClear()
     putSessionAndMessages.mockClear()
+    replaceSessionMessages.mockClear()
     recordUsage.mockClear()
+    markTurnStarted.mockClear()
+    markTurnProgress.mockClear()
+    markTurnCompleted.mockClear()
+    clearSessionRuntime.mockClear()
     promptMock.mockClear()
     abortMock.mockClear()
     setModelMock.mockClear()
@@ -718,6 +757,97 @@ describe("AgentHost persistence", () => {
         )
       )
     ).toHaveLength(1)
+
+    host.dispose()
+  })
+
+  it("drops orphan tool results while repairing an interrupted turn", async () => {
+    const { AgentHost } = await import("@/agent/agent-host")
+    state.sessions.set("session-1", createSession())
+    state.messagesBySession.set("session-1", [
+      {
+        api: "openai-responses",
+        content: [{ text: "", type: "text" }],
+        id: "assistant-1",
+        model: "gpt-5.1-codex-mini",
+        parentAssistantId: undefined,
+        provider: "openai-codex",
+        role: "assistant",
+        sessionId: "session-1",
+        status: "streaming",
+        stopReason: "toolUse",
+        timestamp: 2,
+        usage: createEmptyUsage(),
+      } as MessageRow,
+      createToolResultMessage({
+        parentAssistantId: "assistant-1",
+        timestamp: 3,
+      }) as MessageRow,
+    ])
+    const host = new AgentHost(
+      createSession(),
+      state.messagesBySession.get("session-1") ?? []
+    )
+
+    promptMock.mockRejectedValue(new Error("Prompt failed"))
+
+    await host.prompt("hello")
+
+    expect(
+      state.messagesBySession
+        .get("session-1")
+        ?.some((message) => message.role === "toolResult")
+    ).toBe(false)
+    expect(replaceSessionMessages).toHaveBeenCalled()
+
+    host.dispose()
+  })
+
+  it("keeps matching tool results while repairing an interrupted turn", async () => {
+    const { AgentHost } = await import("@/agent/agent-host")
+    state.sessions.set("session-1", createSession())
+    state.messagesBySession.set("session-1", [
+      {
+        ...createAssistantMessage({
+          content: [
+            { text: "Reading...", type: "text" },
+            {
+              arguments: { path: "README.md" },
+              id: "call-1",
+              name: "read",
+              type: "toolCall",
+            },
+          ],
+          id: "assistant-1",
+          stopReason: "toolUse",
+        }),
+        sessionId: "session-1",
+        status: "streaming",
+      } as MessageRow,
+      createToolResultMessage({
+        parentAssistantId: "assistant-1",
+        timestamp: 3,
+      }) as MessageRow,
+    ])
+    const host = new AgentHost(
+      createSession(),
+      state.messagesBySession.get("session-1") ?? []
+    )
+
+    promptMock.mockRejectedValue(new Error("Prompt failed"))
+
+    await host.prompt("hello")
+
+    expect(
+      state.messagesBySession.get("session-1")
+    ).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          role: "toolResult",
+          toolCallId: "call-1",
+        }),
+      ])
+    )
 
     host.dispose()
   })

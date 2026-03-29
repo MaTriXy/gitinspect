@@ -1,14 +1,48 @@
 import * as PiAi from "@mariozechner/pi-ai"
 import type { StreamFn } from "@mariozechner/pi-agent-core"
-import type { StreamChatParams, StreamChatResult } from "@/agent/runtime-types"
+import type { TSchema } from "@sinclair/typebox"
 import type { AssistantMessage, StopReason, ToolCall } from "@/types/chat"
-import type { ModelDefinition } from "@/types/models"
+import type {
+  ModelDefinition,
+  ProviderGroupId,
+  ProviderId,
+  ThinkingLevel,
+} from "@/types/models"
 import { SYSTEM_PROMPT } from "@/agent/system-prompt"
 import { createProxyAwareStreamFn } from "@/agent/provider-proxy"
 import { resolveProviderAuthForProvider } from "@/auth/resolve-api-key"
 import { createId } from "@/lib/ids"
+import {
+  getRuntimeTrace,
+  type RuntimeTurnTrace,
+} from "@/lib/runtime-debug"
 import { getModel } from "@/models/catalog"
 import { createEmptyUsage } from "@/types/models"
+
+interface ToolDefinition {
+  description: string
+  name: string
+  parameters: TSchema
+}
+
+interface StreamChatParams {
+  apiKey?: string
+  assistantId?: string
+  assistantTimestamp?: number
+  messages: PiAi.Message[]
+  model: string
+  onTextDelta: (delta: string) => void
+  provider: ProviderId
+  providerGroup?: ProviderGroupId
+  sessionId: string
+  signal: AbortSignal
+  thinkingLevel: ThinkingLevel
+  tools: ToolDefinition[]
+}
+
+interface StreamChatResult {
+  assistantMessage: AssistantMessage
+}
 
 function createAssistantDraft(
   model: ModelDefinition,
@@ -203,11 +237,20 @@ type ProxyAwareStream = Awaited<
   ReturnType<ReturnType<typeof createProxyAwareStreamFn>>
 >
 
+function getStreamSessionId(
+  options?: PiAi.SimpleStreamOptions
+): string | undefined {
+  return (
+    options as (PiAi.SimpleStreamOptions & { sessionId?: string }) | undefined
+  )?.sessionId
+}
+
 function wrapAssistantMessageEventStream(
   model: ModelDefinition,
   upstream: ProxyAwareStream,
   assistantId: string,
-  timestamp: number
+  timestamp: number,
+  trace?: RuntimeTurnTrace
 ) {
   const stream = PiAi.createAssistantMessageEventStream()
   const partials = new WeakMap<object, AssistantMessage>()
@@ -231,6 +274,20 @@ function wrapAssistantMessageEventStream(
   }
 
   const pushEvent = (event: PiAi.AssistantMessageEvent): boolean => {
+    trace?.markOnce("provider.first_event", "provider.first_event", {
+      eventType: event.type,
+      model: model.id,
+      provider: model.provider,
+    })
+
+    if (event.type === "text_delta") {
+      trace?.markOnce("provider.first_text_delta", "provider.first_text_delta", {
+        deltaLength: event.delta.length,
+        model: model.id,
+        provider: model.provider,
+      })
+    }
+
     switch (event.type) {
       case "start":
         stream.push({
@@ -263,6 +320,11 @@ function wrapAssistantMessageEventStream(
         return false
       case "done": {
         const message = decorateAssistant(event.message)
+        trace?.checkpoint("provider.done", {
+          model: model.id,
+          provider: model.provider,
+          stopReason: message.stopReason,
+        })
         stream.push({
           ...event,
           message,
@@ -276,6 +338,11 @@ function wrapAssistantMessageEventStream(
         if (error.errorMessage === "Connection error.") {
           error.errorMessage = formatConnectionDiagnostic(model, error.errorMessage)
         }
+        trace?.checkpoint("provider.error", {
+          error: error.errorMessage,
+          model: model.id,
+          provider: model.provider,
+        })
         console.error(
           `[provider-stream] Error from ${model.provider}/${model.id} (${model.baseUrl}):`,
           error.errorMessage
@@ -300,6 +367,11 @@ function wrapAssistantMessageEventStream(
       }
 
       const message = decorateAssistant(await upstream.result())
+      trace?.checkpoint("provider.result.resolved", {
+        model: model.id,
+        provider: model.provider,
+        stopReason: message.stopReason,
+      })
       stream.push({
         message,
         reason: toSuccessStopReason(message.stopReason),
@@ -337,16 +409,32 @@ async function createAppStream(
   assistantId = createId(),
   timestamp = Date.now()
 ) {
+  const sessionId = getStreamSessionId(options)
+  const trace = getRuntimeTrace(sessionId)
+
+  trace?.startPhase("provider.createAppStream", {
+    messageCount: context.messages.length,
+    model: model.id,
+    provider: model.provider,
+    sessionId,
+    toolCount: context.tools?.length ?? 0,
+  })
   const upstream = await proxyAwareStreamSimple(model, normalizeContext(context), {
     ...options,
     maxTokens: options?.maxTokens ?? model.maxTokens,
+  })
+  trace?.endPhase("provider.createAppStream", {
+    model: model.id,
+    provider: model.provider,
+    sessionId,
   })
 
   return wrapAssistantMessageEventStream(
     model,
     upstream,
     assistantId,
-    timestamp
+    timestamp,
+    trace
   )
 }
 

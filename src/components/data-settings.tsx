@@ -1,14 +1,13 @@
 "use client"
 
 import * as React from "react"
-import { useNavigate, useSearch } from "@tanstack/react-router"
+import { useNavigate, useRouterState, useSearch } from "@tanstack/react-router"
 import { toast } from "sonner"
 import { Download, Trash2 } from "lucide-react"
 import { runtimeClient } from "@/agent/runtime-client"
 import {
   deleteAllLocalData,
   exportAllChatData,
-  listSessions,
 } from "@/db/schema"
 import { Button } from "@/components/ui/button"
 import {
@@ -29,7 +28,6 @@ import {
   ItemDescription,
   ItemTitle,
 } from "@/components/ui/item"
-import { useCurrentRouteTarget } from "@/hooks/use-current-route-target"
 
 function downloadJson(filename: string, data: unknown) {
   const blob = new Blob([JSON.stringify(data, null, 2)], {
@@ -45,35 +43,50 @@ function downloadJson(filename: string, data: unknown) {
 
 export function DataSettings() {
   const navigate = useNavigate()
+  const currentMatch = useRouterState({
+    select: (state) => state.matches[state.matches.length - 1],
+  })
   const search = useSearch({ strict: false })
-  const currentRouteTarget = useCurrentRouteTarget()
-  const sidebar = search.sidebar === "open" ? "open" : undefined
   const [isExporting, setIsExporting] = React.useState(false)
   const [isDeleting, setIsDeleting] = React.useState(false)
 
   const navigateAfterWipe = React.useCallback(() => {
-    if (currentRouteTarget.to === "/") {
+    const sidebar = search.sidebar === "open" ? "open" : undefined
+
+    if (currentMatch.routeId === "/chat/$sessionId") {
       void navigate({
-        to: "/",
         search: {
-          ...search,
+          q: undefined,
           settings: undefined,
           sidebar,
         },
+        to: "/chat",
+      })
+      return
+    }
+
+    if (currentMatch.routeId === "/") {
+      void navigate({
+        search: (prev) => ({
+          ...prev,
+          settings: undefined,
+          sidebar,
+        }),
+        to: ".",
       })
       return
     }
 
     void navigate({
-      ...currentRouteTarget,
-      search: {
-        initialQuery: undefined,
-        session: undefined,
+      search: (prev) => ({
+        ...prev,
+        q: undefined,
         settings: undefined,
         sidebar,
-      },
+      }),
+      to: ".",
     })
-  }, [currentRouteTarget, navigate, search, sidebar])
+  }, [currentMatch.routeId, navigate, search.sidebar])
 
   const handleExport = React.useCallback(async () => {
     setIsExporting(true)
@@ -93,14 +106,7 @@ export function DataSettings() {
   const handleDeleteAll = React.useCallback(async () => {
     setIsDeleting(true)
     try {
-      const sessions = await listSessions()
-      for (const session of sessions) {
-        try {
-          await runtimeClient.releaseSession(session.id)
-        } catch {
-          // Best-effort worker teardown.
-        }
-      }
+      await runtimeClient.releaseAll()
       await deleteAllLocalData()
       toast.success("All local data removed from this browser")
       navigateAfterWipe()

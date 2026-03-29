@@ -53,6 +53,34 @@ export type MessageRow = ChatMessage & {
   status: MessageStatus
 }
 
+export interface SessionLeaseRow {
+  acquiredAt: string
+  heartbeatAt: string
+  ownerTabId: string
+  ownerToken: string
+  sessionId: string
+}
+
+export type SessionRuntimeStatus =
+  | "aborted"
+  | "completed"
+  | "error"
+  | "idle"
+  | "interrupted"
+  | "streaming"
+
+export interface SessionRuntimeRow {
+  assistantMessageId?: string
+  lastError?: string
+  lastProgressAt?: string
+  ownerTabId?: string
+  sessionId: string
+  startedAt?: string
+  status: SessionRuntimeStatus
+  turnId?: string
+  updatedAt: string
+}
+
 export interface SettingsRow {
   key: string
   updatedAt: string

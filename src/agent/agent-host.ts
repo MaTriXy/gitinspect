@@ -19,10 +19,14 @@ import {
   putMessages,
   putSession,
   putSessionAndMessages,
+  replaceSessionMessages,
   recordUsage,
 } from "@/db/schema"
 import { BusyRuntimeError } from "@/agent/runtime-command-errors"
-import { webMessageTransformer } from "@/agent/message-transformer"
+import {
+  pruneOrphanToolResults,
+  webMessageTransformer,
+} from "@/agent/message-transformer"
 import { streamChatWithPiAgent } from "@/agent/provider-stream"
 import {
   buildInitialAgentState,
@@ -34,12 +38,21 @@ import {
 import { resolveApiKeyForProvider } from "@/auth/resolve-api-key"
 import { getIsoNow } from "@/lib/dates"
 import { createId } from "@/lib/ids"
-import { logRuntimeDebug } from "@/lib/runtime-debug"
+import {
+  getRuntimeTrace,
+  logRuntimeDebug,
+  type RuntimeTurnTrace,
+} from "@/lib/runtime-debug"
 import { getCanonicalProvider, getModel } from "@/models/catalog"
 import { createRepoRuntime } from "@/repo/repo-runtime"
 import { normalizeRepoSource } from "@/repo/settings"
 import { appendSessionNotice } from "@/sessions/session-notices"
 import { buildPersistedSession } from "@/sessions/session-service"
+import {
+  markTurnCompleted,
+  markTurnProgress,
+  markTurnStarted,
+} from "@/db/session-runtime"
 import { createRepoTools } from "@/tools"
 
 type TerminalAssistantStatus = "aborted" | "error" | undefined
@@ -86,6 +99,20 @@ function rewriteStreamingAssistantRow(
   )
 }
 
+function getAssistantTextLength(message: MessageRow | undefined): number {
+  if (!message || message.role !== "assistant") {
+    return 0
+  }
+
+  return message.content.reduce((length, block) => {
+    if (block.type !== "text") {
+      return length
+    }
+
+    return length + block.text.trim().length
+  }, 0)
+}
+
 export class AgentHost {
   readonly agent: Agent
 
@@ -93,6 +120,7 @@ export class AgentHost {
   private persistedMessageIds = new Set<string>()
   private recordedAssistantMessageIds = new Set<string>()
   private currentAssistantMessageId?: string
+  private currentTurnId?: string
   private lastDraftAssistant?: AssistantMessage
   private lastTerminalStatus: TerminalAssistantStatus = undefined
   private disposed = false
@@ -109,6 +137,7 @@ export class AgentHost {
   private watchdogError?: Error
   private watchdogInterval?: ReturnType<typeof setInterval>
   private recoveringFromHandlerError = false
+  private turnTrace?: RuntimeTurnTrace
 
   constructor(
     session: SessionData,
@@ -129,11 +158,36 @@ export class AgentHost {
 
     this.agent = new Agent({
       convertToLlm: webMessageTransformer,
-      getApiKey: async (provider) =>
-        await resolveApiKeyForProvider(
-          provider as ProviderId,
-          this.session.providerGroup
-        ),
+      getApiKey: async (provider) => {
+        const trace = this.getTrace()
+
+        trace?.startPhase("provider.auth.resolve", {
+          provider: provider as string,
+          sessionId: this.session.id,
+        })
+
+        try {
+          const apiKey = await resolveApiKeyForProvider(
+            provider as ProviderId,
+            this.session.providerGroup
+          )
+
+          trace?.endPhase("provider.auth.resolve", {
+            hasApiKey: Boolean(apiKey),
+            provider: provider as string,
+            sessionId: this.session.id,
+          })
+          return apiKey
+        } catch (error) {
+          trace?.endPhase("provider.auth.resolve", {
+            error:
+              error instanceof Error ? error.message : String(error),
+            provider: provider as string,
+            sessionId: this.session.id,
+          })
+          throw error
+        }
+      },
       initialState: buildInitialAgentState(
         this.session,
         messages,
@@ -157,11 +211,18 @@ export class AgentHost {
     this.sessionData = session
   }
 
+  private getTrace(): RuntimeTurnTrace | undefined {
+    return this.turnTrace ?? getRuntimeTrace(this.session.id)
+  }
+
   isBusy(): boolean {
     return this.promptPending || this.runningTurn !== undefined || this.agent.state.isStreaming
   }
 
-  async startTurn(content: string): Promise<void> {
+  async startTurn(
+    content: string,
+    trace?: RuntimeTurnTrace
+  ): Promise<void> {
     const trimmed = content.trim()
 
     if (!trimmed || this.disposed) {
@@ -172,7 +233,15 @@ export class AgentHost {
       throw new BusyRuntimeError(this.session.id)
     }
 
+    this.turnTrace = trace ?? this.getTrace()
+    this.turnTrace?.checkpoint("host.startTurn.enter", {
+      contentLength: trimmed.length,
+      hasRepoSource: Boolean(this.session.repoSource),
+      sessionId: this.session.id,
+    })
+
     const timestamp = Date.now()
+    this.currentTurnId = createId()
     const userMessage: Message & { id: string } = {
       content: trimmed,
       id: createId(),
@@ -205,8 +274,28 @@ export class AgentHost {
     )
 
     try {
+      this.turnTrace?.startPhase("host.persistPromptStart", {
+        sessionId: this.session.id,
+      })
       await this.persistPromptStart(userRow, assistantRow)
+      this.turnTrace?.endPhase("host.persistPromptStart", {
+        assistantMessageId: assistantRow.id,
+        sessionId: this.session.id,
+        userMessageId: userRow.id,
+      })
     } catch (error) {
+      this.turnTrace?.endPhase("host.persistPromptStart", {
+        error:
+          error instanceof Error ? error.message : String(error),
+        sessionId: this.session.id,
+      })
+      this.turnTrace?.end({
+        error:
+          error instanceof Error ? error.message : String(error),
+        phase: "host.persistPromptStart",
+        sessionId: this.session.id,
+        status: "failed",
+      })
       this.promptPending = false
       this.clearActiveStreamPointers()
       throw error
@@ -217,7 +306,26 @@ export class AgentHost {
       sessionId: this.session.id,
       userMessageId: userRow.id,
     })
+    this.turnTrace?.startPhase("host.markTurnStarted", {
+      assistantMessageId: assistantRow.id,
+      sessionId: this.session.id,
+    })
+    await markTurnStarted({
+      assistantMessageId: assistantRow.id,
+      sessionId: this.session.id,
+      turnId: this.currentTurnId,
+    })
+    this.turnTrace?.endPhase("host.markTurnStarted", {
+      assistantMessageId: assistantRow.id,
+      sessionId: this.session.id,
+      turnId: this.currentTurnId,
+    })
     this.markProgress()
+    this.turnTrace?.checkpoint("host.agent.prompt.queued", {
+      assistantMessageId: assistantRow.id,
+      sessionId: this.session.id,
+      turnId: this.currentTurnId,
+    })
 
     this.runningTurn = this.runTurnToCompletion(userMessage).finally(() => {
       this.runningTurn = undefined
@@ -232,6 +340,11 @@ export class AgentHost {
 
   async flushPersistence(): Promise<void> {
     await this.persistQueue
+  }
+
+  async waitForTurn(): Promise<void> {
+    await this.runningTurn
+    await this.flushPersistence()
   }
 
   abort(): void {
@@ -303,11 +416,22 @@ export class AgentHost {
   private async runTurnToCompletion(
     userMessage: Message & { id: string }
   ): Promise<void> {
+    const trace = this.getTrace()
+
     this.startWatchdog()
     let promptError: Error | undefined
 
     try {
+      trace?.startPhase("host.agent.prompt", {
+        sessionId: this.session.id,
+        turnId: this.currentTurnId,
+        userMessageId: userMessage.id,
+      })
       await this.agent.prompt(userMessage)
+      trace?.checkpoint("host.agent.prompt.resolved", {
+        sessionId: this.session.id,
+        turnId: this.currentTurnId,
+      })
     } catch (error) {
       if (this.isDisposed()) {
         return
@@ -315,7 +439,17 @@ export class AgentHost {
 
       promptError = error instanceof Error ? error : new Error(String(error))
       this.watchdogError ??= promptError
+      trace?.checkpoint("host.agent.prompt.error", {
+        error: promptError.message,
+        sessionId: this.session.id,
+        turnId: this.currentTurnId,
+      })
     } finally {
+      trace?.endPhase("host.agent.prompt", {
+        error: promptError?.message,
+        sessionId: this.session.id,
+        turnId: this.currentTurnId,
+      })
       this.promptPending = false
       this.stopWatchdog()
       await this.flushEventQueue()
@@ -345,6 +479,13 @@ export class AgentHost {
       return
     }
 
+    const trace = this.getTrace()
+
+    trace?.markOnce("host.first_event", "host.first_event", {
+      eventType: event.type,
+      sessionId: this.session.id,
+      turnId: this.currentTurnId,
+    })
     this.markProgress()
 
     if (!snapshot.isStreaming && snapshot.error) {
@@ -363,12 +504,51 @@ export class AgentHost {
     if (snapshot.isStreaming) {
       const currentAssistantRow = this.buildCurrentAssistantRow(snapshot)
       const newlyCompletedRows = this.getNewlyCompletedRows(snapshot)
+      const assistantTextLength = getAssistantTextLength(currentAssistantRow)
+
+      if (assistantTextLength > 0) {
+        trace?.markOnce(
+          "host.first_assistant_text_available",
+          "host.first_assistant_text_available",
+          {
+            assistantMessageId: currentAssistantRow?.id,
+            sessionId: this.session.id,
+            textLength: assistantTextLength,
+            turnId: this.currentTurnId,
+          }
+        )
+      }
 
       if (currentAssistantRow || newlyCompletedRows.length > 0) {
+        trace?.markOnce(
+          "host.first_stream_persist_attempt",
+          "host.first_stream_persist_attempt",
+          {
+            hasCurrentAssistant: Boolean(currentAssistantRow),
+            newRows: newlyCompletedRows.length,
+            sessionId: this.session.id,
+            turnId: this.currentTurnId,
+          }
+        )
         await this.persistStreamingProgress(currentAssistantRow, newlyCompletedRows)
+        trace?.markOnce(
+          "host.first_stream_persist_done",
+          "host.first_stream_persist_done",
+          {
+            hasCurrentAssistant: Boolean(currentAssistantRow),
+            newRows: newlyCompletedRows.length,
+            sessionId: this.session.id,
+            turnId: this.currentTurnId,
+          }
+        )
       }
 
       if (event.type === "turn_end" && event.toolResults.length > 0) {
+        trace?.checkpoint("host.turn_end.with_tool_results", {
+          sessionId: this.session.id,
+          toolResults: event.toolResults.length,
+          turnId: this.currentTurnId,
+        })
         this.currentAssistantMessageId = createId()
         this.lastDraftAssistant = undefined
       }
@@ -443,20 +623,49 @@ export class AgentHost {
       return
     }
 
+    const trace = this.getTrace()
     const normalizedError = toError(error)
     this.lastTerminalStatus = "error"
     const repairedRows = await this.buildRepairRows(normalizedError.message)
-
-    await this.persistSessionBoundary(
+    const nextSession = buildPersistedSession(
       {
+        ...this.session,
         error: undefined,
         isStreaming: false,
+        updatedAt: getIsoNow(),
       },
-      repairedRows.changedMessages,
-      repairedRows.rows
+      repairedRows
     )
+
+    this.session = nextSession
+    this.persistQueue = this.persistQueue.then(async () => {
+      if (this.isDisposed()) {
+        return
+      }
+
+      await replaceSessionMessages(this.session, repairedRows)
+      this.persistedMessageIds.clear()
+
+      for (const message of repairedRows) {
+        this.persistedMessageIds.add(message.id)
+      }
+    })
+
+    await this.persistQueue
+    await markTurnCompleted({
+      assistantMessageId: this.currentAssistantMessageId,
+      lastError: normalizedError.message,
+      sessionId: this.session.id,
+      status: "error",
+      turnId: this.currentTurnId,
+    })
     await this.appendSystemNoticeFromError(normalizedError)
     this.clearActiveStreamPointers()
+    trace?.end({
+      error: normalizedError.message,
+      sessionId: this.session.id,
+      status: "error",
+    })
   }
 
   private async persistCurrentTurnBoundary(
@@ -494,6 +703,14 @@ export class AgentHost {
       return false
     }
 
+    const terminalStatus =
+      terminalAssistant.status === "aborted" ||
+      terminalAssistant.status === "completed" ||
+      terminalAssistant.status === "error"
+        ? terminalAssistant.status
+        : "error"
+    const trace = this.getTrace()
+
     await this.persistSessionBoundary(
       {
         error: undefined,
@@ -502,21 +719,37 @@ export class AgentHost {
       [terminalAssistant],
       currentRows
     )
+    await markTurnCompleted({
+      assistantMessageId: terminalAssistant.id,
+      lastError: terminalAssistant.errorMessage,
+      sessionId: this.session.id,
+      status: terminalStatus,
+      turnId: this.currentTurnId,
+    })
 
-    if (terminalAssistant.status === "error" && terminalAssistant.errorMessage) {
+    if (terminalStatus === "error" && terminalAssistant.errorMessage) {
       await this.appendSystemNoticeFromError(
         new Error(terminalAssistant.errorMessage)
       )
     }
 
+    const terminalTurnId = this.currentTurnId
+    trace?.checkpoint("host.turn.persisted", {
+      assistantMessageId: terminalAssistant.id,
+      sessionId: this.session.id,
+      status: terminalStatus,
+      turnId: terminalTurnId,
+    })
+    trace?.end({
+      assistantMessageId: terminalAssistant.id,
+      sessionId: this.session.id,
+      status: terminalStatus,
+    })
     this.clearActiveStreamPointers()
     return true
   }
 
-  private async buildRepairRows(errorMessage: string): Promise<{
-    changedMessages: MessageRow[]
-    rows: MessageRow[]
-  }> {
+  private async buildRepairRows(errorMessage: string): Promise<MessageRow[]> {
     const persistedRows = await getSessionMessages(this.session.id)
     const rowsById = new Map<string, MessageRow>()
 
@@ -528,26 +761,21 @@ export class AgentHost {
       rowsById.set(row.id, row)
     }
 
-    const rows = [...rowsById.values()]
-      .map((row) =>
-        rewriteStreamingAssistantRow(this.session.id, row, errorMessage)
-      )
-      .sort(sortByTimestamp)
-    const changedMessages = rows.filter((row) => {
-      const previous = persistedRows.find((candidate) => candidate.id === row.id)
-      return JSON.stringify(previous) !== JSON.stringify(row)
-    })
-
-    return {
-      changedMessages,
-      rows,
-    }
+    return pruneOrphanToolResults(
+      [...rowsById.values()]
+        .map((row) =>
+          rewriteStreamingAssistantRow(this.session.id, row, errorMessage)
+        )
+        .sort(sortByTimestamp)
+    )
   }
 
   private clearActiveStreamPointers(): void {
     this.currentAssistantMessageId = undefined
+    this.currentTurnId = undefined
     this.lastDraftAssistant = undefined
     this.lastTerminalStatus = undefined
+    this.turnTrace = undefined
   }
 
   private isDisposed(): boolean {
@@ -871,6 +1099,17 @@ export class AgentHost {
       if (currentAssistantRow) {
         await putMessage(currentAssistantRow)
         this.persistedMessageIds.add(currentAssistantRow.id)
+      }
+
+      if (currentAssistantRow || newlyCompletedRows.length > 0) {
+        await markTurnProgress({
+          assistantMessageId:
+            currentAssistantRow?.role === "assistant"
+              ? currentAssistantRow.id
+              : this.currentAssistantMessageId,
+          sessionId: this.session.id,
+          turnId: this.currentTurnId,
+        })
       }
     })
 

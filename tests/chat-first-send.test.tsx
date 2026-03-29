@@ -29,10 +29,19 @@ vi.mock("@/hooks/use-runtime-session", () => ({
   }),
 }))
 
+vi.mock("@/hooks/use-session-ownership", () => ({
+  useSessionOwnership: () => ({ kind: "owned" }),
+}))
+
 vi.mock("@/agent/runtime-client", () => ({
   runtimeClient: {
+    hasActiveTurn: vi.fn(() => false),
     startInitialTurn: startInitialTurnMock,
   },
+}))
+
+vi.mock("@/sessions/session-notices", () => ({
+  reconcileInterruptedSession: vi.fn(async () => ({ kind: "noop" })),
 }))
 
 vi.mock("@/sessions/session-actions", () => ({
@@ -42,14 +51,6 @@ vi.mock("@/sessions/session-actions", () => ({
   resolveProviderDefaults: vi.fn(async () => ({
     model: "gpt-5.1-codex-mini",
     providerGroup: "openai-codex",
-  })),
-  sessionDestination: vi.fn(() => ({
-    params: {
-      _splat: "main",
-      owner: "acme",
-      repo: "demo",
-    },
-    to: "/$owner/$repo/$",
   })),
 }))
 
@@ -144,6 +145,31 @@ function createDeferred() {
   }
 }
 
+function mockChatQueries(options: {
+  defaults: {
+    model: string
+    providerGroup: string
+    thinkingLevel: string
+  }
+  loadedSessionState:
+    | { kind: "none" | "missing" }
+    | { kind: "active"; messages: unknown[]; session: SessionData }
+  sessionRuntime?: unknown
+}) {
+  useLiveQueryMock.mockImplementation(() => {
+    const callIndex = useLiveQueryMock.mock.calls.length
+
+    switch ((callIndex - 1) % 3) {
+      case 0:
+        return options.loadedSessionState
+      case 1:
+        return options.sessionRuntime
+      default:
+        return options.defaults
+    }
+  })
+}
+
 describe("Chat first send", () => {
   beforeEach(() => {
     createSessionForRepoMock.mockReset()
@@ -161,10 +187,9 @@ describe("Chat first send", () => {
       providerGroup: "openai-codex",
       thinkingLevel: "medium",
     }
-    let callIndex = 0
-    useLiveQueryMock.mockImplementation(() => {
-      callIndex += 1
-      return callIndex % 2 === 1 ? { kind: "none" } : defaults
+    mockChatQueries({
+      defaults,
+      loadedSessionState: { kind: "none" },
     })
 
     const { Chat } = await import("@/components/chat")
@@ -192,11 +217,9 @@ describe("Chat first send", () => {
     expect(navigateMock).toHaveBeenCalledWith(
       expect.objectContaining({
         params: {
-          _splat: "main",
-          owner: "acme",
-          repo: "demo",
+          sessionId: "session-1",
         },
-        to: "/$owner/$repo/$",
+        to: "/chat/$sessionId",
       })
     )
   })
@@ -213,10 +236,9 @@ describe("Chat first send", () => {
       providerGroup: "openai-codex",
       thinkingLevel: "medium",
     }
-    let callIndex = 0
-    useLiveQueryMock.mockImplementation(() => {
-      callIndex += 1
-      return callIndex % 2 === 1 ? { kind: "none" } : defaults
+    mockChatQueries({
+      defaults,
+      loadedSessionState: { kind: "none" },
     })
 
     const { Chat } = await import("@/components/chat")

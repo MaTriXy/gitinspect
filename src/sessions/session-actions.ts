@@ -21,18 +21,18 @@ import {
 import { createSession, persistSessionSnapshot } from "@/sessions/session-service"
 
 function isProviderId(value: string): value is ProviderId {
-  return (
-    getProviderGroups().includes(value as ProviderGroupId) &&
-    value !== "opencode-free"
-  )
+  return getProviderGroups().includes(value as ProviderGroupId)
 }
 
 function normalizeVisibleSession(
   session: SessionData,
   visibleProviderGroups: Array<ProviderGroupId>
 ): SessionData {
-  const fallbackProviderGroup = visibleProviderGroups[0] ?? "opencode-free"
-  const currentProviderGroup = session.providerGroup ?? session.provider
+  const fallbackProviderGroup = visibleProviderGroups[0] ?? "fireworks-free"
+  const rawGroup = session.providerGroup ?? session.provider
+  const migratedGroup =
+    (rawGroup as string) === "opencode-free" ? "fireworks-free" : rawGroup
+  const currentProviderGroup = migratedGroup as ProviderGroupId
   const providerGroup = visibleProviderGroups.includes(currentProviderGroup)
     ? currentProviderGroup
     : fallbackProviderGroup
@@ -78,7 +78,11 @@ export async function resolveProviderDefaults(): Promise<{
   const connectedProviders = getConnectedProviders(providerKeys)
   const visibleProviderGroups = getVisibleProviderGroups(connectedProviders)
   const fallbackProviderGroup = getPreferredProviderGroup(connectedProviders)
-  const storedProviderGroup = await getSetting("last-used-provider-group")
+  const storedProviderGroupRaw = await getSetting("last-used-provider-group")
+  const storedProviderGroup =
+    storedProviderGroupRaw === "opencode-free"
+      ? "fireworks-free"
+      : storedProviderGroupRaw
   const storedProvider = await getSetting("last-used-provider")
   const providerGroup =
     typeof storedProviderGroup === "string" &&
@@ -120,36 +124,8 @@ export type SessionCreationBase = Pick<
   "model" | "provider" | "providerGroup" | "thinkingLevel"
 >
 
-export type SessionRouteTarget = Pick<SessionData, "id" | "repoSource">
-
-export function sessionDestination(
-  target: SessionRouteTarget
-):
-  | {
-      to: "/chat"
-    }
-  | {
-      params: {
-        _splat: string
-        owner: string
-        repo: string
-      }
-      to: "/$owner/$repo/$"
-    } {
-  if (target.repoSource) {
-    return {
-      params: {
-        _splat: target.repoSource.ref,
-        owner: target.repoSource.owner,
-        repo: target.repoSource.repo,
-      },
-      to: "/$owner/$repo/$",
-    }
-  }
-
-  return {
-    to: "/chat",
-  }
+export function buildSessionHref(sessionId: string): string {
+  return `/chat/${encodeURIComponent(sessionId)}`
 }
 
 export async function createSessionForChat(
@@ -170,7 +146,8 @@ export async function createSessionForChat(
 
   return createSession({
     model: base.model,
-    providerGroup: base.providerGroup ?? base.provider,
+    providerGroup:
+      base.providerGroup ?? getDefaultProviderGroup(base.provider),
     thinkingLevel: base.thinkingLevel,
   })
 }
@@ -202,7 +179,9 @@ export async function createSessionForRepo(params: {
 
   return createSession({
     model: params.base.model,
-    providerGroup: params.base.providerGroup ?? params.base.provider,
+    providerGroup:
+      params.base.providerGroup ??
+      getDefaultProviderGroup(params.base.provider),
     repoSource,
     thinkingLevel: params.base.thinkingLevel,
   })
@@ -211,7 +190,7 @@ export async function createSessionForRepo(params: {
 export async function deleteSessionAndResolveNext(params: {
   sessionId: string
   siblingSessions: Array<SessionData>
-}): Promise<{ nextSession?: SessionRouteTarget }> {
+}): Promise<{ nextSessionId?: string }> {
   try {
     await runtimeClient.releaseSession(params.sessionId)
   } catch {
@@ -226,12 +205,9 @@ export async function deleteSessionAndResolveNext(params: {
 
   if (fallback) {
     return {
-      nextSession: {
-        id: fallback.id,
-        repoSource: fallback.repoSource,
-      },
+      nextSessionId: fallback.id,
     }
   }
 
-  return { nextSession: undefined }
+  return { nextSessionId: undefined }
 }
