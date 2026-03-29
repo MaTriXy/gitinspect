@@ -27,27 +27,14 @@ vi.mock("@/hooks/use-runtime-session", () => ({
   useRuntimeSession: () => useRuntimeSessionMock(),
 }))
 
+vi.mock("@/agent/runtime-client", () => ({
+  runtimeClient: {
+    startInitialTurn: vi.fn(async () => {}),
+  },
+}))
+
 vi.mock("@/sessions/session-actions", () => ({
-  persistLastUsedSessionSettings: vi.fn(async () => {}),
-  resolveProviderDefaults: vi.fn(async () => ({
-    model: "gpt-5.1-codex-mini",
-    providerGroup: "openai-codex",
-  })),
-  sessionDestination: vi.fn(() => ({ to: "/chat" })),
-}))
-
-vi.mock("@/repo/settings", () => ({
-  normalizeRepoSource: vi.fn(() => undefined),
-  resolveRepoSource: vi.fn(async () => undefined),
-}))
-
-vi.mock("@/db/schema", () => ({
-  touchRepository: vi.fn(async () => {}),
-}))
-
-vi.mock("@/sessions/session-bootstrap", () => ({
-  bootstrapSessionAndSend: vi.fn(async () => ({
-    bootstrapStatus: "bootstrap",
+  createSessionForChat: vi.fn(async () => ({
     cost: 0,
     createdAt: "2026-03-24T12:00:00.000Z",
     error: undefined,
@@ -64,6 +51,38 @@ vi.mock("@/sessions/session-bootstrap", () => ({
     updatedAt: "2026-03-24T12:00:00.000Z",
     usage: createEmptyUsage(),
   })),
+  createSessionForRepo: vi.fn(async () => ({
+    cost: 0,
+    createdAt: "2026-03-24T12:00:00.000Z",
+    error: undefined,
+    id: "session-1",
+    isStreaming: false,
+    messageCount: 0,
+    model: "gpt-5.1-codex-mini",
+    preview: "",
+    provider: "openai-codex",
+    providerGroup: "openai-codex",
+    repoSource: undefined,
+    thinkingLevel: "medium",
+    title: "New chat",
+    updatedAt: "2026-03-24T12:00:00.000Z",
+    usage: createEmptyUsage(),
+  })),
+  persistLastUsedSessionSettings: vi.fn(async () => {}),
+  resolveProviderDefaults: vi.fn(async () => ({
+    model: "gpt-5.1-codex-mini",
+    providerGroup: "openai-codex",
+  })),
+  sessionDestination: vi.fn(() => ({ to: "/chat" })),
+}))
+
+vi.mock("@/repo/settings", () => ({
+  normalizeRepoSource: vi.fn(() => undefined),
+  resolveRepoSource: vi.fn(async () => undefined),
+}))
+
+vi.mock("@/db/schema", () => ({
+  touchRepository: vi.fn(async () => {}),
 }))
 
 vi.mock("@/components/chat-empty-state", () => ({
@@ -97,32 +116,18 @@ vi.mock("@/components/chat-adapter", () => ({
 }))
 
 function buildSession(
-  bootstrapStatus: SessionData["bootstrapStatus"],
-  messageCount: number
+  overrides: Partial<SessionData> = {}
 ): { kind: "active"; messages: Array<MessageRow>; session: SessionData } {
   return {
     kind: "active",
-    messages:
-      messageCount === 0
-        ? []
-        : [
-            {
-              content: [{ text: "hello", type: "text" }],
-              id: "message-1",
-              role: "user",
-              sessionId: "session-1",
-              status: "completed",
-              timestamp: 1,
-            } as MessageRow,
-          ],
+    messages: [],
     session: {
-      bootstrapStatus,
       cost: 0,
       createdAt: "2026-03-24T12:00:00.000Z",
       error: undefined,
       id: "session-1",
       isStreaming: false,
-      messageCount,
+      messageCount: 0,
       model: "gpt-5.1-codex-mini",
       preview: "",
       provider: "openai-codex",
@@ -132,6 +137,7 @@ function buildSession(
       title: "New chat",
       updatedAt: "2026-03-24T12:00:00.000Z",
       usage: createEmptyUsage(),
+      ...overrides,
     },
   }
 }
@@ -143,30 +149,8 @@ describe("Chat state", () => {
     useRuntimeSessionMock.mockClear()
   })
 
-  it("shows the bootstrap loading state for provisional sessions", async () => {
-    const session = buildSession("bootstrap", 0)
-    const defaults = {
-      model: "gpt-5.1-codex-mini",
-      providerGroup: "openai-codex",
-      thinkingLevel: "medium",
-    }
-    let callIndex = 0
-    useLiveQueryMock.mockImplementation(() => {
-      callIndex += 1
-      return callIndex % 2 === 1 ? session : defaults
-    })
-
-    const { Chat } = await import("@/components/chat")
-
-    render(<Chat />)
-
-    expect(screen.getByText("Starting session...")).toBeTruthy()
-    expect(screen.queryByTestId("empty-state")).toBeNull()
-    expect(screen.getByTestId("composer")).toBeTruthy()
-  })
-
-  it("shows the normal empty state only when ready and empty", async () => {
-    const session = buildSession("ready", 0)
+  it("shows the normal empty state when the active session has no messages", async () => {
+    const session = buildSession()
     const defaults = {
       model: "gpt-5.1-codex-mini",
       providerGroup: "openai-codex",
@@ -188,8 +172,10 @@ describe("Chat state", () => {
   })
 
   it("shows a streaming status row when the assistant has not rendered yet", async () => {
-    const session = buildSession("ready", 1)
-    session.session.isStreaming = true
+    const session = buildSession({
+      isStreaming: true,
+      messageCount: 1,
+    })
     session.messages = [
       {
         content: [{ text: "hello", type: "text" }],

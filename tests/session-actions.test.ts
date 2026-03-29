@@ -66,10 +66,7 @@ function buildSession(
     ...overrides,
   }
 
-  return {
-    ...session,
-    bootstrapStatus: session.bootstrapStatus ?? "ready",
-  }
+  return session
 }
 
 describe("session-actions", () => {
@@ -132,7 +129,7 @@ describe("session-actions", () => {
       providerGroup: "openai-codex",
       repoSource: undefined,
     })
-    expect(persistSessionSnapshot).toHaveBeenCalledWith(created)
+    expect(persistSessionSnapshot).not.toHaveBeenCalled()
     expect(session.id).toBe("session-new")
   })
 
@@ -164,6 +161,7 @@ describe("session-actions", () => {
         repo: "demo",
       },
     })
+    expect(persistSessionSnapshot).not.toHaveBeenCalled()
     expect(session.repoSource?.ref).toBe("dev")
   })
 

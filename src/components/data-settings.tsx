@@ -48,8 +48,6 @@ export function DataSettings() {
   const search = useSearch({ strict: false })
   const currentRouteTarget = useCurrentRouteTarget()
   const sidebar = search.sidebar === "open" ? "open" : undefined
-  const initialQuery =
-    typeof search.initialQuery === "string" ? search.initialQuery : undefined
   const [isExporting, setIsExporting] = React.useState(false)
   const [isDeleting, setIsDeleting] = React.useState(false)
 

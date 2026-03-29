@@ -1,9 +1,11 @@
 import type { ProviderGroupId, ProviderId } from "@/types/models"
 import type { RepoSource, SessionData } from "@/types/storage"
-import { deleteSession,
+import {
+  deleteSession,
   getSetting,
   listProviderKeys,
-  setSetting } from "@/db/schema"
+  setSetting,
+} from "@/db/schema"
 import { runtimeClient } from "@/agent/runtime-client"
 import {
   getCanonicalProvider,
@@ -16,10 +18,7 @@ import {
   hasModelForGroup,
   isProviderGroupId,
 } from "@/models/catalog"
-import {
-  createSession,
-  persistSessionSnapshot,
-} from "@/sessions/session-service"
+import { createSession, persistSessionSnapshot } from "@/sessions/session-service"
 
 function isProviderId(value: string): value is ProviderId {
   return (
@@ -159,22 +158,21 @@ export async function createSessionForChat(
   if (!base) {
     const { model, providerGroup, visibleProviderGroups } =
       await resolveProviderDefaults()
-    const session = createSession({
-      model,
-      providerGroup,
-      repoSource: undefined,
-    })
-    await persistSessionSnapshot(session)
-    return await persistVisibleSessionSelection(session, visibleProviderGroups)
+    return normalizeVisibleSession(
+      createSession({
+        model,
+        providerGroup,
+        repoSource: undefined,
+      }),
+      visibleProviderGroups
+    )
   }
 
-  const session = createSession({
+  return createSession({
     model: base.model,
     providerGroup: base.providerGroup ?? base.provider,
     thinkingLevel: base.thinkingLevel,
   })
-  await persistSessionSnapshot(session)
-  return session
 }
 
 export async function createSessionForRepo(params: {
@@ -192,23 +190,22 @@ export async function createSessionForRepo(params: {
   if (!params.base) {
     const { model, providerGroup, visibleProviderGroups } =
       await resolveProviderDefaults()
-    const session = createSession({
-      model,
-      providerGroup,
-      repoSource,
-    })
-    await persistSessionSnapshot(session)
-    return await persistVisibleSessionSelection(session, visibleProviderGroups)
+    return normalizeVisibleSession(
+      createSession({
+        model,
+        providerGroup,
+        repoSource,
+      }),
+      visibleProviderGroups
+    )
   }
 
-  const session = createSession({
+  return createSession({
     model: params.base.model,
     providerGroup: params.base.providerGroup ?? params.base.provider,
     repoSource,
     thinkingLevel: params.base.thinkingLevel,
   })
-  await persistSessionSnapshot(session)
-  return session
 }
 
 export async function deleteSessionAndResolveNext(params: {

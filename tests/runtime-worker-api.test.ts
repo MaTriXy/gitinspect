@@ -27,6 +27,7 @@ vi.mock("@/agent/agent-host", () => ({
     isBusy: () => false,
     prompt: vi.fn(),
     refreshGithubToken: vi.fn(),
+    startTurn: vi.fn(),
     setModelSelection: vi.fn(),
     setThinkingLevel: vi.fn(),
   })),
@@ -36,7 +37,6 @@ function buildSession(
   overrides: Partial<SessionData> = {}
 ): SessionData {
   return {
-    bootstrapStatus: "ready",
     cost: 0,
     createdAt: "2026-03-24T12:00:00.000Z",
     error: undefined,
@@ -67,6 +67,18 @@ function buildMessage(): MessageRow {
   } as MessageRow
 }
 
+function createDeferred<T>() {
+  let resolve: ((value: T) => void) | undefined
+  const promise = new Promise<T>((nextResolve) => {
+    resolve = nextResolve
+  })
+
+  return {
+    promise,
+    resolve: (value: T) => resolve?.(value),
+  }
+}
+
 describe("runtime-worker-api", () => {
   beforeEach(async () => {
     await import("@/agent/runtime-worker-api").then(async (api) => {
@@ -90,9 +102,9 @@ describe("runtime-worker-api", () => {
         session: buildSession({ isStreaming: false }),
       })
 
-    const { init, dispose } = await import("@/agent/runtime-worker-api")
+    const { dispose, initFromStorage } = await import("@/agent/runtime-worker-api")
 
-    await expect(init("session-1")).resolves.toBe(true)
+    await expect(initFromStorage("session-1")).resolves.toBe(true)
 
     expect(reconcileInterruptedSession).toHaveBeenCalledWith("session-1")
     expect(agentHostCtor).toHaveBeenCalledWith(
@@ -106,5 +118,75 @@ describe("runtime-worker-api", () => {
     )
 
     await dispose()
+  })
+
+  it("initializes from an in-memory session without touching storage", async () => {
+    const { dispose, initFromSession } = await import("@/agent/runtime-worker-api")
+    const session = buildSession({
+      id: "session-initial",
+    })
+
+    await initFromSession(session)
+
+    expect(loadSessionWithMessages).not.toHaveBeenCalled()
+    expect(agentHostCtor).toHaveBeenCalledWith(
+      session,
+      [],
+      expect.objectContaining({
+        githubRuntimeToken: "github-token",
+      })
+    )
+
+    await dispose()
+  })
+
+  it("serializes concurrent storage init for the same session", async () => {
+    const deferred = createDeferred<{
+      messages: MessageRow[]
+      session: SessionData
+    }>()
+    loadSessionWithMessages.mockReturnValueOnce(deferred.promise)
+
+    const { dispose, initFromStorage } = await import("@/agent/runtime-worker-api")
+
+    const initOne = initFromStorage("session-1")
+    const initTwo = initFromStorage("session-1")
+
+    deferred.resolve({
+      messages: [buildMessage()],
+      session: buildSession(),
+    })
+
+    await expect(Promise.all([initOne, initTwo])).resolves.toEqual([true, true])
+    expect(loadSessionWithMessages).toHaveBeenCalledTimes(1)
+    expect(agentHostCtor).toHaveBeenCalledTimes(1)
+
+    await dispose()
+  })
+
+  it("queues dispose behind an in-flight init transition", async () => {
+    const deferred = createDeferred<{
+      messages: MessageRow[]
+      session: SessionData
+    }>()
+    loadSessionWithMessages.mockReturnValueOnce(deferred.promise)
+
+    const { dispose, initFromStorage, startTurn } = await import(
+      "@/agent/runtime-worker-api"
+    )
+
+    const initPromise = initFromStorage("session-1")
+    const disposePromise = dispose()
+
+    deferred.resolve({
+      messages: [buildMessage()],
+      session: buildSession(),
+    })
+
+    await expect(initPromise).resolves.toBe(true)
+    await disposePromise
+    await expect(startTurn("hello")).rejects.toThrow("Worker not initialized")
+    expect(agentHostCtor).toHaveBeenCalledTimes(1)
+    expect(agentHostDispose).toHaveBeenCalledTimes(1)
   })
 })

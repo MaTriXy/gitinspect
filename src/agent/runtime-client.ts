@@ -2,6 +2,7 @@ import { wrap } from "comlink"
 import type { Remote } from "comlink"
 import type { ProviderGroupId, ThinkingLevel } from "@/types/models"
 import type { SessionWorkerApi } from "@/agent/runtime-worker-types"
+import type { SessionData } from "@/types/storage"
 import {
   MissingSessionRuntimeError,
   reviveRuntimeCommandError,
@@ -17,11 +18,7 @@ interface WorkerHandle {
   workerType: "dedicated" | "shared"
 }
 
-function isWorkerTransportError(error: unknown): boolean {
-  if (!(error instanceof Error)) {
-    return false
-  }
-
+function isWorkerTransportError(error: Error): boolean {
   const message = error.message.toLowerCase()
 
   return (
@@ -59,7 +56,7 @@ export class RuntimeClient {
           workerType: "shared",
         }
       } catch (error) {
-        console.warn("[gitinspect:first-send] shared_worker_unavailable", {
+        console.warn("[gitinspect:runtime] shared_worker_unavailable", {
           error,
           sessionId,
         })
@@ -83,7 +80,8 @@ export class RuntimeClient {
   }
 
   private async getOrCreate(
-    sessionId: string
+    sessionId: string,
+    initialize: (api: Remote<SessionWorkerApi>) => Promise<boolean>
   ): Promise<WorkerHandle | undefined> {
     const existing = this.workers.get(sessionId)
 
@@ -91,20 +89,20 @@ export class RuntimeClient {
       return existing
     }
 
-    let pending = this.initPromises.get(sessionId)
+    const pending = this.initPromises.get(sessionId)
 
     if (pending) {
       return pending
     }
 
-    pending = (async () => {
+    const nextPending = (async () => {
       try {
         const handle = this.createWorker(sessionId)
         logRuntimeDebug("worker_init_started", {
           sessionId,
           workerType: handle.workerType,
         })
-        const exists = await handle.api.init(sessionId)
+        const exists = await initialize(handle.api)
 
         if (!exists) {
           this.terminateHandle(handle)
@@ -122,15 +120,34 @@ export class RuntimeClient {
       }
     })()
 
-    this.initPromises.set(sessionId, pending)
-    return pending
+    this.initPromises.set(sessionId, nextPending)
+    return nextPending
+  }
+
+  private async getOrCreateFromStorage(
+    sessionId: string
+  ): Promise<WorkerHandle | undefined> {
+    return await this.getOrCreate(
+      sessionId,
+      async (api) => await api.initFromStorage(sessionId)
+    )
+  }
+
+  private async getOrCreateFromSession(
+    session: SessionData
+  ): Promise<WorkerHandle | undefined> {
+    return await this.getOrCreate(session.id, async (api) => {
+      await api.initFromSession(session)
+      return true
+    })
   }
 
   private async call<T>(
     sessionId: string,
+    getHandle: () => Promise<WorkerHandle | undefined>,
     invoke: (api: Remote<SessionWorkerApi>) => Promise<T>
   ): Promise<T> {
-    const handle = await this.getOrCreate(sessionId)
+    const handle = await getHandle()
 
     if (!handle) {
       throw new MissingSessionRuntimeError(sessionId)
@@ -139,7 +156,7 @@ export class RuntimeClient {
     try {
       return await invoke(handle.api)
     } catch (error) {
-      if (isWorkerTransportError(error)) {
+      if (error instanceof Error && isWorkerTransportError(error)) {
         this.terminateHandle(handle)
         this.workers.delete(sessionId)
       }
@@ -152,23 +169,47 @@ export class RuntimeClient {
     }
   }
 
-  async ensureSession(sessionId: string): Promise<boolean> {
-    const handle = await this.getOrCreate(sessionId)
-    return handle !== undefined
-  }
-
-  async send(sessionId: string, content: string): Promise<void> {
-    logRuntimeDebug("runtime_send_started", {
+  async startTurn(sessionId: string, content: string): Promise<void> {
+    logRuntimeDebug("runtime_turn_started", {
       contentLength: content.trim().length,
       sessionId,
     })
+
     try {
-      await this.call(sessionId, async (api) => await api.send(content))
-      logRuntimeDebug("runtime_send_completed", { sessionId })
+      await this.call(
+        sessionId,
+        async () => await this.getOrCreateFromStorage(sessionId),
+        async (api) => await api.startTurn(content)
+      )
+      logRuntimeDebug("runtime_turn_accepted", { sessionId })
     } catch (error) {
-      logRuntimeDebug("runtime_send_failed", {
+      logRuntimeDebug("runtime_turn_failed", {
         message: error instanceof Error ? error.message : String(error),
         sessionId,
+      })
+      throw error
+    }
+  }
+
+  async startInitialTurn(session: SessionData, content: string): Promise<void> {
+    logRuntimeDebug("runtime_initial_turn_started", {
+      contentLength: content.trim().length,
+      sessionId: session.id,
+    })
+
+    try {
+      await this.call(
+        session.id,
+        async () => await this.getOrCreateFromSession(session),
+        async (api) => await api.startTurn(content)
+      )
+      logRuntimeDebug("runtime_initial_turn_accepted", {
+        sessionId: session.id,
+      })
+    } catch (error) {
+      logRuntimeDebug("runtime_initial_turn_failed", {
+        message: error instanceof Error ? error.message : String(error),
+        sessionId: session.id,
       })
       throw error
     }
@@ -184,7 +225,7 @@ export class RuntimeClient {
     try {
       await handle.api.abort()
     } catch (error) {
-      if (isWorkerTransportError(error)) {
+      if (error instanceof Error && isWorkerTransportError(error)) {
         this.terminateHandle(handle)
         this.workers.delete(sessionId)
       }
@@ -207,15 +248,19 @@ export class RuntimeClient {
     try {
       await handle.api.dispose()
     } catch {
-      // Best-effort teardown; worker may already be gone.
+      return
+    } finally {
+      this.terminateHandle(handle)
+      this.workers.delete(sessionId)
     }
-
-    this.terminateHandle(handle)
-    this.workers.delete(sessionId)
   }
 
   async refreshGithubToken(sessionId: string): Promise<void> {
-    await this.call(sessionId, async (api) => await api.refreshGithubToken())
+    await this.call(
+      sessionId,
+      async () => await this.getOrCreateFromStorage(sessionId),
+      async (api) => await api.refreshGithubToken()
+    )
   }
 
   async setModelSelection(
@@ -223,8 +268,10 @@ export class RuntimeClient {
     providerGroup: ProviderGroupId,
     modelId: string
   ): Promise<void> {
-    await this.call(sessionId, async (api) =>
-      api.setModelSelection(providerGroup, modelId)
+    await this.call(
+      sessionId,
+      async () => await this.getOrCreateFromStorage(sessionId),
+      async (api) => await api.setModelSelection(providerGroup, modelId)
     )
   }
 
@@ -232,8 +279,10 @@ export class RuntimeClient {
     sessionId: string,
     thinkingLevel: ThinkingLevel
   ): Promise<void> {
-    await this.call(sessionId, async (api) =>
-      api.setThinkingLevel(thinkingLevel)
+    await this.call(
+      sessionId,
+      async () => await this.getOrCreateFromStorage(sessionId),
+      async (api) => await api.setThinkingLevel(thinkingLevel)
     )
   }
 }

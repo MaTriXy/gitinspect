@@ -171,12 +171,14 @@ export async function exportAllChatData(): Promise<ChatDataExportV1> {
 export async function deleteAllLocalData(): Promise<void> {
   await db.transaction(
     "rw",
-    db.sessions,
-    db.messages,
-    db.settings,
-    db.providerKeys,
-    db.repositories,
-    db.dailyCosts,
+    [
+      db.sessions,
+      db.messages,
+      db.settings,
+      db.providerKeys,
+      db.repositories,
+      db.dailyCosts,
+    ],
     async () => {
       await db.sessions.clear()
       await db.messages.clear()

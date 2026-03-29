@@ -75,6 +75,9 @@ type MockAgentEvent =
       type: "message_end"
     }
   | {
+      type: "agent_end"
+    }
+  | {
       type: "stream_update"
     }
 
@@ -162,7 +165,6 @@ vi.mock("@mariozechner/pi-agent-core", () => ({
 
 function createSession(): SessionData {
   return {
-    bootstrapStatus: "ready",
     cost: 0,
     createdAt: "2026-03-24T12:00:00.000Z",
     error: undefined,
@@ -305,6 +307,59 @@ describe("AgentHost persistence", () => {
     host.dispose()
   })
 
+  it("returns from startTurn after prompt-start persistence while the turn continues in background", async () => {
+    const { AgentHost } = await import("@/agent/agent-host")
+    const host = new AgentHost(createSession(), [])
+    let resolvePrompt: (() => void) | undefined
+
+    promptMock.mockImplementation(
+      async () =>
+        await new Promise<void>((resolve) => {
+          resolvePrompt = () => {
+            agentState.isStreaming = false
+            const assistant = createAssistantMessage({
+              content: [{ text: "Finished", type: "text" }],
+              id: "assistant-final",
+            })
+            agentState.messages = [
+              {
+                content: "hello",
+                role: "user",
+                timestamp: 1,
+              },
+              assistant,
+            ]
+            subscriber?.({
+              message: assistant,
+              type: "message_end",
+            })
+            resolve()
+          }
+        })
+    )
+
+    await host.startTurn("hello")
+
+    expect(putSessionAndMessages).toHaveBeenCalledTimes(1)
+    expect(putSessionAndMessages).toHaveBeenCalledWith(
+      expect.objectContaining({
+        isStreaming: true,
+      }),
+      expect.arrayContaining([
+        expect.objectContaining({
+          role: "assistant",
+          status: "streaming",
+        }),
+      ])
+    )
+
+    resolvePrompt?.()
+    await flushMicrotasks()
+    await host.flushPersistence()
+
+    host.dispose()
+  })
+
   it("persists tool result rows while the stream is still active", async () => {
     const { AgentHost } = await import("@/agent/agent-host")
     const host = new AgentHost(createSession(), [])
@@ -404,6 +459,46 @@ describe("AgentHost persistence", () => {
         }),
       ])
     )
+
+    host.dispose()
+  })
+
+  it("persists the completed assistant row when the prompt settles without terminal events", async () => {
+    const { AgentHost } = await import("@/agent/agent-host")
+    const host = new AgentHost(createSession(), [])
+    const assistant = createAssistantMessage({
+      content: [{ text: "Finished", type: "text" }],
+      id: "assistant-final-no-event",
+    })
+
+    promptMock.mockImplementation(async () => {
+      agentState.isStreaming = false
+      agentState.messages = [
+        {
+          content: "hello",
+          role: "user",
+          timestamp: 1,
+        },
+        assistant,
+      ]
+      await flushMicrotasks()
+    })
+
+    await host.prompt("hello")
+
+    expect(
+      putSessionAndMessages.mock.calls.some(
+        ([session, messages]) =>
+          session.isStreaming === false &&
+          messages.some(
+            (message) =>
+              message.role === "assistant" &&
+              message.status === "completed" &&
+              message.content[0]?.type === "text" &&
+              message.content[0].text === "Finished"
+          )
+      )
+    ).toBe(true)
 
     host.dispose()
   })
@@ -526,7 +621,7 @@ describe("AgentHost persistence", () => {
 
     expect(putSessionAndMessages).toHaveBeenNthCalledWith(
       1,
-      expect.objectContaining({ bootstrapStatus: "ready", isStreaming: true }),
+      expect.objectContaining({ isStreaming: true }),
       expect.arrayContaining([
         expect.objectContaining({
           id: expect.any(String),
@@ -537,37 +632,26 @@ describe("AgentHost persistence", () => {
       ])
     )
 
-    expect(putSessionAndMessages).toHaveBeenNthCalledWith(
-      2,
-      expect.objectContaining({
-        bootstrapStatus: "ready",
-        error: undefined,
-        isStreaming: true,
-      }),
-      expect.arrayContaining([
-        expect.objectContaining({
-          role: "system",
-          sessionId: "session-1",
-          fingerprint: "unknown:Prompt failed",
-        }),
-      ])
-    )
-
-    expect(putSessionAndMessages).toHaveBeenNthCalledWith(
-      3,
-      expect.objectContaining({
-        bootstrapStatus: "ready",
-        error: undefined,
-        isStreaming: false,
-      }),
-      expect.arrayContaining([
-        expect.objectContaining({
-          role: "assistant",
-          sessionId: "session-1",
-          status: "error",
-        }),
-      ])
-    )
+    expect(
+      putSessionAndMessages.mock.calls.some(
+        ([session, messages]) =>
+          session.isStreaming === false &&
+          messages.some(
+            (message) =>
+              message.role === "assistant" && message.status === "error"
+          )
+      )
+    ).toBe(true)
+    expect(
+      putSessionAndMessages.mock.calls.some(([_session, messages]) =>
+        messages.some(
+          (message) =>
+            message.role === "system" &&
+            message.sessionId === "session-1" &&
+            message.fingerprint === "unknown:Prompt failed"
+        )
+      )
+    ).toBe(true)
 
     host.dispose()
   })

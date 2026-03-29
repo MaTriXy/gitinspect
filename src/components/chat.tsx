@@ -23,16 +23,19 @@ import { ProgressiveBlur } from "@/components/ui/progressive-blur"
 import { Icons } from "@/components/icons"
 import { copySessionToClipboard } from "@/lib/copy-session-markdown"
 import { touchRepository } from "@/db/schema"
+import { runtimeClient } from "@/agent/runtime-client"
+import { getRuntimeCommandErrorMessage } from "@/agent/runtime-command-errors"
 import { useRuntimeSession } from "@/hooks/use-runtime-session"
 import { getCanonicalProvider, getDefaultProviderGroup } from "@/models/catalog"
 import { normalizeRepoSource, resolveRepoSource } from "@/repo/settings"
 import {
+  createSessionForChat,
+  createSessionForRepo,
   persistLastUsedSessionSettings,
   resolveProviderDefaults,
   sessionDestination,
 } from "@/sessions/session-actions"
-import { getChatBootstrapPanelMode } from "@/sessions/chat-bootstrap-ui"
-import { bootstrapSessionAndSend } from "@/sessions/session-bootstrap"
+import { reconcileInterruptedSession } from "@/sessions/session-notices"
 import { loadSessionWithMessages } from "@/sessions/session-service"
 
 type EmptyChatDraft = {
@@ -45,6 +48,10 @@ type LoadedSessionState =
   | { kind: "active"; messages: Array<ChatMessage>; session: SessionData }
   | { kind: "missing" }
   | { kind: "none" }
+
+type ChatPanelMode = "empty" | "messages" | "starting" | "streaming_pending"
+
+const STALE_STREAM_RECOVERY_MS = 30 * 60_000
 
 export interface ChatProps {
   repoSource?: RepoTarget
@@ -94,6 +101,31 @@ function repoDestination(repoSource: RepoSource) {
   }
 }
 
+function getChatPanelMode(input: {
+  hasAssistantMessage: boolean
+  isStartingSession: boolean
+  isStreaming: boolean
+  messageCount: number
+}): ChatPanelMode {
+  if (input.isStartingSession && input.messageCount === 0) {
+    return "starting"
+  }
+
+  if (
+    input.isStreaming &&
+    input.messageCount > 0 &&
+    !input.hasAssistantMessage
+  ) {
+    return "streaming_pending"
+  }
+
+  if (input.messageCount === 0) {
+    return "empty"
+  }
+
+  return "messages"
+}
+
 export function Chat(props: ChatProps) {
   const navigate = useNavigate()
   const search = useSearch({ strict: false })
@@ -138,6 +170,7 @@ export function Chat(props: ChatProps) {
   const runtime = useRuntimeSession(sessionId)
   const observerRef = React.useRef<ResizeObserver | null>(null)
   const repoComboboxRef = React.useRef<RepoComboboxHandle>(null)
+  const repairedVisibilityRef = React.useRef(false)
   const [promptHeight, setPromptHeight] = React.useState(0)
 
   const promptRef = React.useCallback((node: HTMLDivElement | null) => {
@@ -219,6 +252,10 @@ export function Chat(props: ChatProps) {
     setDraft((currentDraft) => currentDraft ?? defaults)
   }, [defaults])
 
+  React.useEffect(() => {
+    repairedVisibilityRef.current = false
+  }, [sessionId])
+
   const activeSession =
     loadedSessionState?.kind === "active" ? loadedSessionState.session : undefined
   const messages =
@@ -236,6 +273,37 @@ export function Chat(props: ChatProps) {
       [...messages].reverse().find((message) => message.role === "assistant")?.id,
     [messages]
   )
+
+  React.useEffect(() => {
+    const handleVisibilityChange = () => {
+      if (document.visibilityState !== "visible") {
+        repairedVisibilityRef.current = false
+        return
+      }
+
+      if (
+        repairedVisibilityRef.current ||
+        !activeSession?.isStreaming ||
+        Date.now() - Date.parse(activeSession.updatedAt) < STALE_STREAM_RECOVERY_MS
+      ) {
+        return
+      }
+
+      repairedVisibilityRef.current = true
+      void reconcileInterruptedSession(activeSession.id).catch((error) => {
+        console.error("[gitinspect:runtime] stale_stream_reconcile_failed", {
+          error,
+          sessionId: activeSession.id,
+        })
+      })
+    }
+
+    document.addEventListener("visibilitychange", handleVisibilityChange)
+
+    return () => {
+      document.removeEventListener("visibilitychange", handleVisibilityChange)
+    }
+  }, [activeSession?.id, activeSession?.isStreaming, activeSession?.updatedAt])
 
   React.useEffect(() => {
     if (loadedSessionState?.kind !== "missing") {
@@ -293,6 +361,17 @@ export function Chat(props: ChatProps) {
     })
   }, [])
 
+  const reportRuntimeFailure = React.useCallback(
+    (error: Error) => {
+      toast.error(getRuntimeCommandErrorMessage(error))
+      console.error("[gitinspect:runtime] command_failed", {
+        message: error.message,
+        sessionId: activeSession?.id,
+      })
+    },
+    [activeSession?.id]
+  )
+
   const handleFirstSend = React.useCallback(
     async (content: string) => {
       if (!draft || isStartingSession) {
@@ -302,19 +381,22 @@ export function Chat(props: ChatProps) {
       setIsStartingSession(true)
 
       try {
-        const session = await bootstrapSessionAndSend({
-          content,
-          draft: {
-            model: draft.model,
-            provider: getCanonicalProvider(draft.providerGroup),
-            providerGroup: draft.providerGroup,
-            thinkingLevel: draft.thinkingLevel,
-          },
-          repoTarget: props.repoSource,
-        })
+        const base = {
+          model: draft.model,
+          provider: getCanonicalProvider(draft.providerGroup),
+          providerGroup: draft.providerGroup,
+          thinkingLevel: draft.thinkingLevel,
+        }
+        const session = resolvedRepoSource
+          ? await createSessionForRepo({
+              base,
+              owner: resolvedRepoSource.owner,
+              ref: resolvedRepoSource.ref,
+              repo: resolvedRepoSource.repo,
+            })
+          : await createSessionForChat(base)
 
-        await persistLastUsedSessionSettings(session)
-
+        await runtimeClient.startInitialTurn(session, content)
         await navigate({
           ...sessionDestination({
             id: session.id,
@@ -327,23 +409,41 @@ export function Chat(props: ChatProps) {
             sidebar: prev.sidebar,
           }),
         })
+
+        void persistLastUsedSessionSettings(session)
+      } catch (error) {
+        reportRuntimeFailure(
+          error instanceof Error ? error : new Error(String(error))
+        )
       } finally {
         setIsStartingSession(false)
       }
     },
-    [draft, isStartingSession, navigate, props.repoSource]
+    [
+      draft,
+      isStartingSession,
+      navigate,
+      reportRuntimeFailure,
+      resolvedRepoSource,
+    ]
   )
 
   const handleSend = React.useCallback(
     async (content: string) => {
       if (activeSession) {
-        await runtime.send(content)
+        try {
+          await runtime.send(content)
+        } catch (error) {
+          reportRuntimeFailure(
+            error instanceof Error ? error : new Error(String(error))
+          )
+        }
         return
       }
 
       await handleFirstSend(content)
     },
-    [activeSession, handleFirstSend, runtime]
+    [activeSession, handleFirstSend, reportRuntimeFailure, runtime]
   )
 
   if (loadedSessionState === undefined) {
@@ -383,10 +483,10 @@ export function Chat(props: ChatProps) {
   const currentThinkingLevel =
     activeSession?.thinkingLevel ?? draft?.thinkingLevel ?? "medium"
   const isStreaming = activeSession?.isStreaming ?? isStartingSession
-  const chatPanelMode = getChatBootstrapPanelMode({
-    bootstrapStatus: activeSession?.bootstrapStatus,
-    effectiveStreaming: isStreaming,
+  const chatPanelMode = getChatPanelMode({
     hasAssistantMessage,
+    isStartingSession,
+    isStreaming,
     messageCount: messages.length,
   })
 
@@ -401,7 +501,7 @@ export function Chat(props: ChatProps) {
             messages.length === 0 ? "min-h-full" : ""
           }`}
         >
-          {chatPanelMode === "bootstrap_spinner" ? (
+          {chatPanelMode === "starting" ? (
             <div className="flex min-h-[30vh] items-center justify-center">
               <StatusShimmer>Starting session...</StatusShimmer>
             </div>
@@ -409,13 +509,13 @@ export function Chat(props: ChatProps) {
             <div className="mb-4 flex justify-start">
               <StatusShimmer>Assistant is streaming...</StatusShimmer>
             </div>
-          ) : chatPanelMode === "empty_ready" ? (
+          ) : chatPanelMode === "empty" ? (
             <ChatEmptyState
               onSuggestionClick={(text) => void handleSend(text)}
               onSwitchRepo={() => repoComboboxRef.current?.focusAndClear()}
               repoSource={resolvedRepoSource}
             />
-          ) : chatPanelMode === "empty_other" ? null : (
+          ) : (
             messages.map((message, index) => {
               if (
                 message.role === "toolResult" &&

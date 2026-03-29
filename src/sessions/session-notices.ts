@@ -8,14 +8,7 @@ import {
   loadSessionWithMessages,
 } from "@/sessions/session-service"
 import { putSessionAndMessages } from "@/db/schema"
-import type { BootstrapStatus, MessageRow } from "@/types/storage"
-import type { SessionData } from "@/types/storage"
-
-type AppendSessionNoticeOptions = {
-  bootstrapStatus?: BootstrapStatus
-  clearStreaming?: boolean
-  rewriteStreamingAssistant?: boolean
-}
+import type { MessageRow, SessionData } from "@/types/storage"
 
 function isSystemFingerprintRow(
   message: MessageRow,
@@ -46,30 +39,23 @@ function rewriteStreamingAssistantRows(
   })
 }
 
-async function writeSessionNotice(
+function mergeSessionRows(
   session: SessionData,
-  messages: MessageRow[],
-  notice: MessageRow,
-  bootstrapStatus: BootstrapStatus | undefined,
-  clearStreaming: boolean
-): Promise<void> {
-  const nextSessionBase = {
-    ...session,
-    bootstrapStatus: bootstrapStatus ?? session.bootstrapStatus,
-    error: undefined,
-    isStreaming: clearStreaming ? false : session.isStreaming,
-    updatedAt: getIsoNow(),
-  }
-  const nextMessages = [...messages, notice]
-  const nextSession = buildPersistedSession(nextSessionBase, nextMessages)
-
-  await putSessionAndMessages(nextSession, nextMessages)
+  messages: MessageRow[]
+): SessionData {
+  return buildPersistedSession(
+    {
+      ...session,
+      error: undefined,
+      updatedAt: getIsoNow(),
+    },
+    messages
+  )
 }
 
 export async function appendSessionNotice(
   sessionId: string,
-  error: unknown,
-  options: AppendSessionNoticeOptions = {}
+  error: Error | string
 ): Promise<void> {
   const loaded = await loadSessionWithMessages(sessionId)
 
@@ -92,16 +78,9 @@ export async function appendSessionNotice(
     buildSystemMessage(classified, createId(), Date.now())
   )
 
-  const nextMessages = options.rewriteStreamingAssistant
-    ? rewriteStreamingAssistantRows(loaded.messages, classified.message)
-    : loaded.messages
-
-  await writeSessionNotice(
-    loaded.session,
-    nextMessages,
-    notice,
-    options.bootstrapStatus,
-    options.clearStreaming ?? false
+  await putSessionAndMessages(
+    mergeSessionRows(loaded.session, [...loaded.messages, notice]),
+    [notice]
   )
 }
 
@@ -114,10 +93,43 @@ export async function reconcileInterruptedSession(
     return
   }
 
-  await appendSessionNotice(sessionId, new StreamInterruptedRuntimeError(), {
-    bootstrapStatus:
-      loaded.session.bootstrapStatus === "bootstrap" ? "failed" : "ready",
-    clearStreaming: true,
-    rewriteStreamingAssistant: true,
+  const interruption = new StreamInterruptedRuntimeError()
+  const classified = classifyRuntimeError(interruption)
+  const rewrittenMessages = rewriteStreamingAssistantRows(
+    loaded.messages,
+    classified.message
+  )
+  const changedMessages = rewrittenMessages.filter((message, index) => {
+    const previous = loaded.messages[index]
+    return JSON.stringify(previous) !== JSON.stringify(message)
   })
+  const hasNotice = rewrittenMessages.some((message) =>
+    isSystemFingerprintRow(message, classified.fingerprint)
+  )
+  const nextMessages = hasNotice
+    ? rewrittenMessages
+    : [
+        ...rewrittenMessages,
+        toMessageRow(
+          sessionId,
+          buildSystemMessage(classified, createId(), Date.now())
+        ),
+      ]
+  const persistedChanges =
+    hasNotice || nextMessages.length === rewrittenMessages.length
+      ? changedMessages
+      : [nextMessages[nextMessages.length - 1], ...changedMessages]
+
+  await putSessionAndMessages(
+    buildPersistedSession(
+      {
+        ...loaded.session,
+        error: undefined,
+        isStreaming: false,
+        updatedAt: getIsoNow(),
+      },
+      nextMessages
+    ),
+    persistedChanges
+  )
 }

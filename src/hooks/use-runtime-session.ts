@@ -1,6 +1,5 @@
 import * as React from "react"
 import { runtimeClient } from "@/agent/runtime-client"
-import { appendSessionNotice } from "@/sessions/session-notices"
 
 export function useRuntimeSession(sessionId: string | undefined) {
   const runMutation = React.useEffectEvent(
@@ -9,25 +8,13 @@ export function useRuntimeSession(sessionId: string | undefined) {
         return
       }
 
-      try {
-        await action(sessionId)
-      } catch (error) {
-        try {
-          await appendSessionNotice(sessionId, error)
-        } catch (noticeError) {
-          console.error("[gitinspect:runtime] notice_persistence_failed", {
-            error,
-            noticeError,
-            sessionId,
-          })
-        }
-      }
+      await action(sessionId)
     }
   )
 
   const send = React.useEffectEvent(async (content: string) => {
     await runMutation(async (currentSessionId) => {
-      await runtimeClient.send(currentSessionId, content)
+      await runtimeClient.startTurn(currentSessionId, content)
     })
   })
 

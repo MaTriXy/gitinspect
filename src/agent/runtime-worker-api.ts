@@ -1,4 +1,5 @@
 import type { ProviderGroupId, ThinkingLevel } from "@/types/models"
+import type { MessageRow, SessionData } from "@/types/storage"
 import { AgentHost } from "@/agent/agent-host"
 import { BusyRuntimeError } from "@/agent/runtime-command-errors"
 import { logRuntimeDebug } from "@/lib/runtime-debug"
@@ -8,46 +9,81 @@ import { reconcileInterruptedSession } from "@/sessions/session-notices"
 
 let host: AgentHost | undefined
 let activeSessionId: string | undefined
+let lifecycleChain = Promise.resolve()
 
-export async function init(id: string): Promise<boolean> {
-  if (host && activeSessionId === id) {
-    return true
-  }
+function queueLifecycle<T>(task: () => Promise<T>): Promise<T> {
+  const nextTask = lifecycleChain.then(task, task)
+  lifecycleChain = nextTask.then(
+    () => undefined,
+    () => undefined
+  )
+  return nextTask
+}
 
-  if (host) {
-    host.dispose()
-    host = undefined
-  }
+function disposeHost(): void {
+  host?.dispose()
+  host = undefined
+}
 
-  activeSessionId = id
-  const loaded = await loadSessionWithMessages(id)
-
-  if (!loaded) {
-    activeSessionId = undefined
-    return false
-  }
-
-  // A fresh worker seeing isStreaming=true means the previous runtime died mid-turn.
-  if (loaded.session.isStreaming) {
-    await reconcileInterruptedSession(id)
-  }
-
-  const reloaded = loaded.session.isStreaming
-    ? await loadSessionWithMessages(id)
-    : loaded
-
-  if (!reloaded) {
-    activeSessionId = undefined
-    return false
-  }
-
+async function createHost(
+  session: SessionData,
+  messages: MessageRow[]
+): Promise<AgentHost> {
   const githubRuntimeToken = await getGithubPersonalAccessToken()
-  host = new AgentHost(reloaded.session, reloaded.messages, {
+  return new AgentHost(session, messages, {
     getGithubToken: getGithubPersonalAccessToken,
     githubRuntimeToken,
   })
+}
 
-  return true
+async function loadReconciledSession(
+  sessionId: string
+): Promise<{ messages: MessageRow[]; session: SessionData } | undefined> {
+  const loaded = await loadSessionWithMessages(sessionId)
+
+  if (!loaded) {
+    return undefined
+  }
+
+  if (!loaded.session.isStreaming) {
+    return loaded
+  }
+
+  await reconcileInterruptedSession(sessionId)
+  return await loadSessionWithMessages(sessionId)
+}
+
+export async function initFromStorage(sessionId: string): Promise<boolean> {
+  return await queueLifecycle(async () => {
+    if (host && activeSessionId === sessionId) {
+      return true
+    }
+
+    disposeHost()
+    activeSessionId = sessionId
+
+    const loaded = await loadReconciledSession(sessionId)
+
+    if (!loaded) {
+      activeSessionId = undefined
+      return false
+    }
+
+    host = await createHost(loaded.session, loaded.messages)
+    return true
+  })
+}
+
+export async function initFromSession(session: SessionData): Promise<void> {
+  await queueLifecycle(async () => {
+    if (host && activeSessionId === session.id) {
+      return
+    }
+
+    disposeHost()
+    activeSessionId = session.id
+    host = await createHost(session, [])
+  })
 }
 
 function requireHost(options: { idle?: boolean } = {}): AgentHost {
@@ -62,12 +98,12 @@ function requireHost(options: { idle?: boolean } = {}): AgentHost {
   return host
 }
 
-export async function send(content: string): Promise<void> {
+export async function startTurn(content: string): Promise<void> {
   logRuntimeDebug("prompt_started", {
     contentLength: content.trim().length,
     sessionId: activeSessionId,
   })
-  await requireHost({ idle: true }).prompt(content)
+  await requireHost({ idle: true }).startTurn(content)
 }
 
 export function abort(): Promise<void> {
@@ -75,11 +111,11 @@ export function abort(): Promise<void> {
   return Promise.resolve()
 }
 
-export function dispose(): Promise<void> {
-  host?.dispose()
-  host = undefined
-  activeSessionId = undefined
-  return Promise.resolve()
+export async function dispose(): Promise<void> {
+  await queueLifecycle(async () => {
+    disposeHost()
+    activeSessionId = undefined
+  })
 }
 
 export async function setModelSelection(

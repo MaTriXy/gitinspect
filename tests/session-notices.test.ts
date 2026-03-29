@@ -84,7 +84,6 @@ vi.mock("@/db/schema", () => ({
 
 function buildSession(overrides: Partial<SessionData> = {}): SessionData {
   return {
-    bootstrapStatus: "ready",
     cost: 0,
     createdAt: "2026-03-24T12:00:00.000Z",
     error: undefined,
@@ -104,7 +103,9 @@ function buildSession(overrides: Partial<SessionData> = {}): SessionData {
   }
 }
 
-function buildStreamingAssistant(): MessageRow {
+function buildStreamingAssistant(
+  overrides: Partial<MessageRow> = {}
+): MessageRow {
   return {
     api: "openai-responses",
     content: [{ text: "", type: "text" }],
@@ -117,7 +118,8 @@ function buildStreamingAssistant(): MessageRow {
     stopReason: "stop",
     timestamp: 2,
     usage: createEmptyUsage(),
-  }
+    ...overrides,
+  } as MessageRow
 }
 
 function buildUserMessage(): MessageRow {
@@ -139,11 +141,10 @@ describe("session-notices", () => {
     helpers.putSessionAndMessages.mockReset()
   })
 
-  it("dedupes persisted notices and clears a stale streaming session", async () => {
+  it("dedupes persisted notices", async () => {
     helpers.state.sessions.set(
       "session-1",
       buildSession({
-        bootstrapStatus: "ready",
         isStreaming: true,
       })
     )
@@ -152,20 +153,34 @@ describe("session-notices", () => {
       buildStreamingAssistant(),
     ])
 
-    await appendSessionNotice("session-1", new Error("boom"), {
-      bootstrapStatus: "failed",
-      clearStreaming: true,
-      rewriteStreamingAssistant: true,
-    })
-    await appendSessionNotice("session-1", new Error("boom"), {
-      bootstrapStatus: "failed",
-      clearStreaming: true,
-      rewriteStreamingAssistant: true,
-    })
+    await appendSessionNotice("session-1", new Error("boom"))
+    await appendSessionNotice("session-1", new Error("boom"))
+
+    expect(helpers.putSessionAndMessages).toHaveBeenCalledTimes(1)
+    expect(
+      helpers.state.messagesBySession
+        .get("session-1")
+        ?.filter((message) => message.role === "system")
+    ).toHaveLength(1)
+  })
+
+  it("reconciles an interrupted session exactly once", async () => {
+    helpers.state.sessions.set(
+      "session-1",
+      buildSession({
+        isStreaming: true,
+      })
+    )
+    helpers.state.messagesBySession.set("session-1", [
+      buildUserMessage(),
+      buildStreamingAssistant(),
+    ])
+
+    await reconcileInterruptedSession("session-1")
+    await reconcileInterruptedSession("session-1")
 
     expect(helpers.putSessionAndMessages).toHaveBeenCalledTimes(1)
     expect(helpers.state.sessions.get("session-1")).toMatchObject({
-      bootstrapStatus: "failed",
       isStreaming: false,
     })
     expect(helpers.state.messagesBySession.get("session-1")).toEqual(
@@ -175,40 +190,56 @@ describe("session-notices", () => {
           status: "error",
         }),
         expect.objectContaining({
-          fingerprint: "unknown:boom",
+          fingerprint:
+            "stream_interrupted:Stream interrupted. The runtime stopped before completion.",
           role: "system",
         }),
       ])
     )
   })
 
-  it("reconciles an interrupted bootstrap session exactly once", async () => {
+  it("updates the session when the notice already exists", async () => {
     helpers.state.sessions.set(
       "session-1",
       buildSession({
-        bootstrapStatus: "bootstrap",
         isStreaming: true,
       })
     )
     helpers.state.messagesBySession.set("session-1", [
       buildUserMessage(),
       buildStreamingAssistant(),
+      {
+        fingerprint:
+          "stream_interrupted:Stream interrupted. The runtime stopped before completion.",
+        id: "system-1",
+        kind: "stream_interrupted",
+        message: "Stream interrupted. The runtime stopped before completion.",
+        role: "system",
+        sessionId: "session-1",
+        severity: "error",
+        source: "runtime",
+        status: "completed",
+        timestamp: 3,
+      },
     ])
 
-    await reconcileInterruptedSession("session-1")
     await reconcileInterruptedSession("session-1")
 
     expect(helpers.putSessionAndMessages).toHaveBeenCalledTimes(1)
     expect(helpers.state.sessions.get("session-1")).toMatchObject({
-      bootstrapStatus: "failed",
       isStreaming: false,
     })
+    expect(
+      helpers.state.messagesBySession
+        .get("session-1")
+        ?.filter((message) => message.role === "system")
+    ).toHaveLength(1)
     expect(helpers.state.messagesBySession.get("session-1")).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
-          fingerprint:
-            "stream_interrupted:Stream interrupted. The runtime stopped before completion.",
-          role: "system",
+          id: "assistant-1",
+          role: "assistant",
+          status: "error",
         }),
       ])
     )

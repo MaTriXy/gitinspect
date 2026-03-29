@@ -145,7 +145,35 @@ function RootLayout() {
           void navigate({
             to: "/",
             search: (prev) => ({
-              ...prev,
+              settings: prev.settings,
+              sidebar: open ? "open" : undefined,
+              tab: prev.tab,
+            }),
+          })
+          return
+        }
+
+        if (currentRouteTarget.to === "/chat") {
+          void navigate({
+            to: "/chat",
+            search: (prev) => ({
+              initialQuery: prev.initialQuery,
+              session: prev.session,
+              settings: prev.settings,
+              sidebar: open ? "open" : undefined,
+            }),
+          })
+          return
+        }
+
+        if (currentRouteTarget.to === "/$owner/$repo") {
+          void navigate({
+            params: currentRouteTarget.params,
+            to: "/$owner/$repo",
+            search: (prev) => ({
+              initialQuery: prev.initialQuery,
+              session: prev.session,
+              settings: prev.settings,
               sidebar: open ? "open" : undefined,
             }),
           })
@@ -153,7 +181,8 @@ function RootLayout() {
         }
 
         void navigate({
-          ...currentRouteTarget,
+          params: currentRouteTarget.params,
+          to: "/$owner/$repo/$",
           search: (prev) => ({
             initialQuery: prev.initialQuery,
             session: prev.session,
