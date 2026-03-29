@@ -22,4 +22,5 @@ export const SUGGESTED_REPOS: ReadonlyArray<
   { owner: "rivet-dev", repo: "rivet", ref: "main" },
   { owner: "better-auth", repo: "better-auth", ref: "main" },
   { owner: "RhysSullivan", repo: "executor", ref: "main" },
+  { owner: "chenglou", repo: "pretext", ref: "main" },
 ]
