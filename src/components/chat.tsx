@@ -27,12 +27,6 @@ import { runtimeClient } from "@/agent/runtime-client"
 import { getRuntimeCommandErrorMessage } from "@/agent/runtime-command-errors"
 import { useRuntimeSession } from "@/hooks/use-runtime-session"
 import { useSessionOwnership } from "@/hooks/use-session-ownership"
-import {
-  bindRuntimeTrace,
-  clearRuntimeTrace,
-  createRuntimeTrace,
-  getRuntimeTrace,
-} from "@/lib/runtime-debug"
 import { getCanonicalProvider, getDefaultProviderGroup } from "@/models/catalog"
 import { normalizeRepoSource, resolveRepoSource } from "@/repo/settings"
 import {
@@ -286,22 +280,6 @@ export function Chat(props: ChatProps) {
   const displayRepoSource = activeSession?.repoSource ?? resolvedRepoSource
 
   React.useEffect(() => {
-    if (loadedSessionState?.kind !== "active") {
-      return
-    }
-
-    getRuntimeTrace(loadedSessionState.session.id)?.markOnce(
-      "ui.session_loaded",
-      "ui.session_loaded",
-      {
-        isStreaming: loadedSessionState.session.isStreaming,
-        messageCount: loadedSessionState.messages.length,
-        sessionId: loadedSessionState.session.id,
-      }
-    )
-  }, [loadedSessionState])
-
-  React.useEffect(() => {
     if (!displayRepoSource) {
       return
     }
@@ -361,42 +339,6 @@ export function Chat(props: ChatProps) {
       sessionRuntime?.status,
     ]
   )
-
-  React.useEffect(() => {
-    if (!activeSession?.id || !lastAssistantMessageId) {
-      return
-    }
-
-    const trace = getRuntimeTrace(activeSession.id)
-
-    if (!trace) {
-      return
-    }
-
-    trace.markOnce("ui.first_assistant_message", "ui.first_assistant_message", {
-      messageId: lastAssistantMessageId,
-      sessionId: activeSession.id,
-    })
-
-    if (!hasPartialAssistantText || !lastAssistantMessage) {
-      return
-    }
-
-    trace.markOnce(
-      "ui.first_assistant_text_render",
-      "ui.first_assistant_text_render",
-      {
-        messageId: lastAssistantMessageId,
-        sessionId: activeSession.id,
-        textLength: getAssistantText(lastAssistantMessage).trim().length,
-      }
-    )
-  }, [
-    activeSession?.id,
-    hasPartialAssistantText,
-    lastAssistantMessage,
-    lastAssistantMessageId,
-  ])
 
   React.useEffect(() => {
     if (surfacedSystemNoticeSessionIdRef.current === activeSession?.id) {
@@ -578,14 +520,6 @@ export function Chat(props: ChatProps) {
         return
       }
 
-      const trace = createRuntimeTrace("first-send", {
-        contentLength: content.trim().length,
-        hasRepoSource: Boolean(resolvedRepoSource),
-        providerGroup: draft.providerGroup,
-        thinkingLevel: draft.thinkingLevel,
-      })
-      let sessionId: string | undefined
-
       setIsStartingSession(true)
 
       try {
@@ -595,10 +529,6 @@ export function Chat(props: ChatProps) {
           providerGroup: draft.providerGroup,
           thinkingLevel: draft.thinkingLevel,
         }
-        trace.startPhase("ui.session.create", {
-          model: base.model,
-          providerGroup: base.providerGroup,
-        })
         const session = resolvedRepoSource
           ? await createSessionForRepo({
               base,
@@ -607,24 +537,7 @@ export function Chat(props: ChatProps) {
               repo: resolvedRepoSource.repo,
             })
           : await createSessionForChat(base)
-        sessionId = session.id
-
-        trace.endPhase("ui.session.create", {
-          hasRepoSource: Boolean(session.repoSource),
-          sessionId: session.id,
-        })
-        bindRuntimeTrace(session.id, trace)
-
-        trace.startPhase("ui.runtime.startInitialTurn", {
-          sessionId: session.id,
-        })
         await runtimeClient.startInitialTurn(session, content)
-        trace.endPhase("ui.runtime.startInitialTurn", {
-          sessionId: session.id,
-        })
-        trace.startPhase("ui.router.navigate", {
-          sessionId: session.id,
-        })
         await navigate({
           params: {
             sessionId: session.id,
@@ -636,33 +549,9 @@ export function Chat(props: ChatProps) {
           },
           to: "/chat/$sessionId",
         })
-        trace.endPhase("ui.router.navigate", {
-          sessionId: session.id,
-        })
-        trace.checkpoint("ui.awaiting_first_delta", {
-          sessionId: session.id,
-        })
 
         void persistLastUsedSessionSettings(session)
       } catch (error) {
-        trace.endPhase("ui.session.create", {
-          error: error instanceof Error ? error.message : String(error),
-          sessionId,
-        })
-        trace.endPhase("ui.runtime.startInitialTurn", {
-          error: error instanceof Error ? error.message : String(error),
-          sessionId,
-        })
-        trace.endPhase("ui.router.navigate", {
-          error: error instanceof Error ? error.message : String(error),
-          sessionId,
-        })
-        trace.end({
-          error: error instanceof Error ? error.message : String(error),
-          sessionId,
-          status: "failed",
-        })
-        clearRuntimeTrace(sessionId)
         reportRuntimeFailure(
           error instanceof Error ? error : new Error(String(error))
         )
@@ -691,39 +580,9 @@ export function Chat(props: ChatProps) {
           return
         }
 
-        const trace = bindRuntimeTrace(
-          activeSession.id,
-          createRuntimeTrace("turn", {
-            contentLength: content.trim().length,
-            messageCount: messages.length,
-            providerGroup: activeSession.providerGroup,
-            sessionId: activeSession.id,
-            thinkingLevel: activeSession.thinkingLevel,
-          })
-        )
-
         try {
-          trace.startPhase("ui.runtime.startTurn", {
-            sessionId: activeSession.id,
-          })
           await runtime.send(content)
-          trace.endPhase("ui.runtime.startTurn", {
-            sessionId: activeSession.id,
-          })
-          trace.checkpoint("ui.awaiting_first_delta", {
-            sessionId: activeSession.id,
-          })
         } catch (error) {
-          trace.endPhase("ui.runtime.startTurn", {
-            error: error instanceof Error ? error.message : String(error),
-            sessionId: activeSession.id,
-          })
-          trace.end({
-            error: error instanceof Error ? error.message : String(error),
-            sessionId: activeSession.id,
-            status: "failed",
-          })
-          clearRuntimeTrace(activeSession.id)
           reportRuntimeFailure(
             error instanceof Error ? error : new Error(String(error))
           )
@@ -737,7 +596,6 @@ export function Chat(props: ChatProps) {
       activeComposerState,
       activeSession,
       handleFirstSend,
-      messages.length,
       reportRuntimeFailure,
       runtime,
     ]

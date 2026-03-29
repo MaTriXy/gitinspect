@@ -14,13 +14,6 @@ import {
   MissingSessionRuntimeError,
 } from "@/agent/runtime-command-errors"
 import { getSessionRuntime, putSession } from "@/db/schema"
-import {
-  bindRuntimeTrace,
-  clearRuntimeTrace,
-  getRuntimeTrace,
-  logRuntimeDebug,
-  type RuntimeTurnTrace,
-} from "@/lib/runtime-debug"
 import { getIsoNow } from "@/lib/dates"
 import { getCanonicalProvider } from "@/models/catalog"
 import { getGithubPersonalAccessToken } from "@/repo/github-token"
@@ -92,29 +85,12 @@ export class RuntimeClient {
 
   private async createHost(
     session: SessionData,
-    messages: MessageRow[],
-    trace?: RuntimeTurnTrace
+    messages: MessageRow[]
   ): Promise<AgentHost> {
-    trace?.startPhase("runtime.githubToken.read", {
-      sessionId: session.id,
-    })
     const githubRuntimeToken = await getGithubPersonalAccessToken()
-    trace?.endPhase("runtime.githubToken.read", {
-      hasGithubToken: Boolean(githubRuntimeToken),
-      sessionId: session.id,
-    })
-    trace?.startPhase("runtime.host.construct", {
-      hasRepoSource: Boolean(session.repoSource),
-      messageCount: messages.length,
-      sessionId: session.id,
-    })
     const host = new AgentHost(session, messages, {
       getGithubToken: getGithubPersonalAccessToken,
       githubRuntimeToken,
-    })
-    trace?.endPhase("runtime.host.construct", {
-      hasRepoSource: Boolean(session.repoSource),
-      sessionId: session.id,
     })
     return host
   }
@@ -123,7 +99,6 @@ export class RuntimeClient {
     sessionId: string,
     options: { keepAlive?: boolean } = {}
   ): Promise<void> {
-    logRuntimeDebug("lease_claim_started", { sessionId })
     const claimed = await claimSessionLease(sessionId)
 
     if (claimed.kind === "locked") {
@@ -133,7 +108,6 @@ export class RuntimeClient {
     if (options.keepAlive !== false) {
       this.startLeaseHeartbeat(sessionId)
     }
-    logRuntimeDebug("lease_claimed", { sessionId })
   }
 
   private startLeaseHeartbeat(sessionId: string): void {
@@ -212,44 +186,23 @@ export class RuntimeClient {
   }
 
   private async loadMutationSession(
-    sessionId: string,
-    trace?: RuntimeTurnTrace
+    sessionId: string
   ): Promise<{ messages: MessageRow[]; session: SessionData }> {
-    trace?.startPhase("runtime.state.load", { sessionId })
     let { state } = await this.loadPersistedState(sessionId)
-    trace?.endPhase("runtime.state.load", {
-      sessionId,
-      state: state.kind,
-    })
 
     assertTurnMutationAllowed(sessionId, state, { allowRecovering: true })
 
     if (deriveRecoveryIntent(state) === "run-now") {
-      trace?.startPhase("runtime.reconcileInterrupted", { sessionId })
       await reconcileInterruptedSession(sessionId, {
         hasLocalRunner: false,
       })
-      trace?.endPhase("runtime.reconcileInterrupted", { sessionId })
-      trace?.startPhase("runtime.state.reload", { sessionId })
       ;({ state } = await this.loadPersistedState(sessionId))
-      trace?.endPhase("runtime.state.reload", {
-        sessionId,
-        state: state.kind,
-      })
     }
 
     assertTurnMutationAllowed(sessionId, state, { allowRecovering: false })
 
-    trace?.startPhase("runtime.lease.claim", { sessionId })
     await this.claimOwnership(sessionId, { keepAlive: false })
-    trace?.endPhase("runtime.lease.claim", { sessionId })
-    trace?.startPhase("runtime.session.reload", { sessionId })
     const reloaded = await loadSessionWithMessages(sessionId)
-    trace?.endPhase("runtime.session.reload", {
-      hasSession: Boolean(reloaded),
-      messageCount: reloaded?.messages.length ?? 0,
-      sessionId,
-    })
 
     if (!reloaded) {
       await releaseSessionLease(sessionId)
@@ -259,141 +212,46 @@ export class RuntimeClient {
     return reloaded
   }
 
-  async startTurn(
-    sessionId: string,
-    content: string,
-    trace?: RuntimeTurnTrace
-  ): Promise<void> {
-    const turnTrace = trace
-      ? bindRuntimeTrace(sessionId, trace)
-      : getRuntimeTrace(sessionId)
-
-    logRuntimeDebug("runtime_turn_started", {
-      contentLength: content.trim().length,
-      sessionId,
-    })
-    turnTrace?.checkpoint("runtime.startTurn.enter", {
-      contentLength: content.trim().length,
-      sessionId,
-    })
-
+  async startTurn(sessionId: string, content: string): Promise<void> {
     const existing = this.activeTurns.get(sessionId)
 
     if (existing?.isBusy()) {
-      turnTrace?.end({
-        reason: "busy-runtime",
-        sessionId,
-        status: "failed",
-      })
       throw new BusyRuntimeError(sessionId)
     }
 
-    const loaded = await this.loadMutationSession(sessionId, turnTrace)
-    turnTrace?.checkpoint("runtime.session.ready", {
-      hasRepoSource: Boolean(loaded.session.repoSource),
-      messageCount: loaded.messages.length,
-      sessionId,
-    })
-    const host = await this.createHost(loaded.session, loaded.messages, turnTrace)
+    const loaded = await this.loadMutationSession(sessionId)
+    const host = await this.createHost(loaded.session, loaded.messages)
     this.activeTurns.set(sessionId, host)
 
     try {
-      turnTrace?.startPhase("runtime.host.startTurn", { sessionId })
-      await host.startTurn(content, turnTrace)
-      turnTrace?.endPhase("runtime.host.startTurn", { sessionId })
+      await host.startTurn(content)
       this.startLeaseHeartbeat(sessionId)
       this.watchActiveTurn(sessionId, host)
-      logRuntimeDebug("runtime_turn_accepted", { sessionId })
-      turnTrace?.checkpoint("runtime.turn.accepted", { sessionId })
     } catch (error) {
-      turnTrace?.endPhase("runtime.host.startTurn", {
-        error:
-          error instanceof Error ? error.message : String(error),
-        sessionId,
-      })
       host.dispose()
       this.activeTurns.delete(sessionId)
       this.stopLeaseHeartbeat(sessionId)
       await releaseSessionLease(sessionId)
-      logRuntimeDebug("runtime_turn_failed", {
-        message: error instanceof Error ? error.message : String(error),
-        sessionId,
-      })
-      turnTrace?.end({
-        message:
-          error instanceof Error ? error.message : String(error),
-        sessionId,
-        status: "failed",
-      })
-      clearRuntimeTrace(sessionId)
       throw error
     }
   }
 
   async startInitialTurn(
     session: SessionData,
-    content: string,
-    trace?: RuntimeTurnTrace
+    content: string
   ): Promise<void> {
-    const turnTrace = trace
-      ? bindRuntimeTrace(session.id, trace)
-      : getRuntimeTrace(session.id)
-
-    logRuntimeDebug("runtime_initial_turn_started", {
-      contentLength: content.trim().length,
-      sessionId: session.id,
-    })
-    turnTrace?.checkpoint("runtime.startInitialTurn.enter", {
-      contentLength: content.trim().length,
-      sessionId: session.id,
-    })
-
-    turnTrace?.startPhase("runtime.initial.lease.claim", {
-      sessionId: session.id,
-    })
     await this.claimOwnership(session.id)
-    turnTrace?.endPhase("runtime.initial.lease.claim", {
-      sessionId: session.id,
-    })
-    const host = await this.createHost(session, [], turnTrace)
+    const host = await this.createHost(session, [])
     this.activeTurns.set(session.id, host)
 
     try {
-      turnTrace?.startPhase("runtime.initial.host.startTurn", {
-        sessionId: session.id,
-      })
-      await host.startTurn(content, turnTrace)
-      turnTrace?.endPhase("runtime.initial.host.startTurn", {
-        sessionId: session.id,
-      })
+      await host.startTurn(content)
       this.watchActiveTurn(session.id, host)
-      logRuntimeDebug("runtime_initial_turn_accepted", {
-        sessionId: session.id,
-      })
-      turnTrace?.checkpoint("runtime.initial.turn.accepted", {
-        sessionId: session.id,
-      })
     } catch (error) {
-      turnTrace?.endPhase("runtime.initial.host.startTurn", {
-        error:
-          error instanceof Error ? error.message : String(error),
-        sessionId: session.id,
-      })
       host.dispose()
       this.activeTurns.delete(session.id)
       this.stopLeaseHeartbeat(session.id)
       await releaseSessionLease(session.id)
-      logRuntimeDebug("runtime_initial_turn_failed", {
-        message: error instanceof Error ? error.message : String(error),
-        sessionId: session.id,
-      })
-      turnTrace?.end({
-        message:
-          error instanceof Error ? error.message : String(error),
-        sessionId: session.id,
-        status: "failed",
-      })
-      clearRuntimeTrace(session.id)
       throw error
     }
   }
@@ -419,7 +277,6 @@ export class RuntimeClient {
     host?.dispose()
     this.activeTurns.delete(sessionId)
     this.stopLeaseHeartbeat(sessionId)
-    clearRuntimeTrace(sessionId)
     await releaseSessionLease(sessionId)
   }
 
@@ -432,7 +289,6 @@ export class RuntimeClient {
 
     for (const [sessionId] of this.leaseHeartbeats) {
       this.stopLeaseHeartbeat(sessionId)
-      clearRuntimeTrace(sessionId)
     }
 
     await releaseOwnedSessionLeases()

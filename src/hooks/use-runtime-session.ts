@@ -3,7 +3,6 @@ import {
   runtimeClient,
   type InterruptedResumeMode,
 } from "@/agent/runtime-client"
-import type { RuntimeTurnTrace } from "@/lib/runtime-debug"
 
 export function useRuntimeSession(sessionId: string | undefined) {
   const runMutation = React.useEffectEvent(
@@ -16,13 +15,11 @@ export function useRuntimeSession(sessionId: string | undefined) {
     }
   )
 
-  const send = React.useEffectEvent(
-    async (content: string, trace?: RuntimeTurnTrace) => {
-      await runMutation(async (currentSessionId) => {
-        await runtimeClient.startTurn(currentSessionId, content, trace)
-      })
-    }
-  )
+  const send = React.useEffectEvent(async (content: string) => {
+    await runMutation(async (currentSessionId) => {
+      await runtimeClient.startTurn(currentSessionId, content)
+    })
+  })
 
   const abort = React.useEffectEvent(async () => {
     if (!sessionId) {
