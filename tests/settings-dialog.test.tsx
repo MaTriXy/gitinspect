@@ -27,6 +27,9 @@ vi.mock("@tanstack/react-router", () => ({
   }: React.PropsWithChildren<Record<string, unknown>>) =>
     React.createElement("a", props, children),
   useNavigate: () => navigate,
+  useRouter: () => ({
+    invalidate: vi.fn(() => Promise.resolve()),
+  }),
   useRouterState: ({ select }: { select: (state: { matches: Array<{ params: Record<string, string>; routeId: string }> }) => unknown }) =>
     select({
       matches: [

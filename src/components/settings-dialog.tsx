@@ -2,10 +2,10 @@ import * as React from "react"
 import {
   Link,
   useNavigate,
+  useRouter,
   useRouterState,
   useSearch,
 } from "@tanstack/react-router"
-import { ArrowUpRight, BadgeCheck } from "lucide-react"
 import type { SettingsSection } from "@/navigation/search-state"
 
 import { runtimeClient } from "@/agent/runtime-client"
@@ -18,14 +18,6 @@ import { ProxySettings } from "@/components/proxy-settings"
 import { Button } from "@/components/ui/button"
 import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog"
 import {
-  Item,
-  ItemActions,
-  ItemContent,
-  ItemDescription,
-  ItemMedia,
-  ItemTitle,
-} from "@/components/ui/item"
-import {
   Breadcrumb,
   BreadcrumbItem,
   BreadcrumbList,
@@ -33,7 +25,6 @@ import {
   BreadcrumbSeparator,
 } from "@/components/ui/breadcrumb"
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs"
-import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group"
 import {
   Sidebar,
   SidebarContent,
@@ -46,8 +37,6 @@ import {
 } from "@/components/ui/sidebar"
 import { isSettingsSection } from "@/navigation/search-state"
 import { useSelectedSessionSummary } from "@/hooks/use-selected-session-summary"
-
-type AboutDemoState = "update" | "latest"
 
 const SETTINGS_SECTIONS: Array<{
   description: string
@@ -95,6 +84,7 @@ const SETTINGS_SECTIONS: Array<{
 
 export function AppSettingsDialog() {
   const navigate = useNavigate()
+  const router = useRouter()
   const search = useSearch({ strict: false })
   const currentMatch = useRouterState({
     select: (state) => state.matches[state.matches.length - 1],
@@ -230,11 +220,10 @@ export function AppSettingsDialog() {
                 {section === "github" ? (
                   <GithubTokenSettings
                     onTokenSaved={async () => {
-                      if (!sessionId) {
-                        return
+                      if (sessionId) {
+                        await runtimeClient.refreshGithubToken(sessionId)
                       }
-
-                      await runtimeClient.refreshGithubToken(sessionId)
+                      await router.invalidate()
                     }}
                   />
                 ) : null}
@@ -251,12 +240,13 @@ export function AppSettingsDialog() {
   )
 }
 
-function AboutPanel() {
-  const [state, setState] = React.useState<AboutDemoState>("update")
-  const isUpdateAvailable = state === "update"
+/** Source repo for this app (see README). */
+const ABOUT_SOURCE_REPO_URL = "https://github.com/jeremyosih/gitoverflow"
 
+function AboutPanel() {
   return (
     <div className="space-y-5">
+      {/*
       <div className="rounded-none border border-dashed border-foreground/15 p-4">
         <div className="flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
           <div className="space-y-1">
@@ -344,35 +334,76 @@ function AboutPanel() {
           </ItemContent>
         </Item>
       </div>
+      */}
 
-      <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs">
-        {[
-          { href: "https://gitinspect.com", label: "Website" },
-          { href: "https://gitinspect.com/privacy", label: "Privacy" },
-          { href: "https://gitinspect.com/terms", label: "Terms" },
-          { href: "https://gitinspect.com/imprint", label: "Imprint" },
-        ].map((item, index) => (
-          <React.Fragment key={item.label}>
-            {index > 0 ? (
-              <span className="text-muted-foreground/50">·</span>
-            ) : null}
-            <Button
-              asChild
-              className="h-auto px-0 py-0 text-xs font-medium text-muted-foreground hover:text-foreground"
-              variant="link"
-            >
-              <a href={item.href} target="_blank" rel="noreferrer">
-                {item.label}
-              </a>
-            </Button>
-          </React.Fragment>
-        ))}
+      <div className="space-y-4 text-sm leading-relaxed">
+        <p className="text-foreground">
+          Ask questions about any GitHub repo from your browser, without cloning.
+          You can replace <span className="font-mono text-[0.9em]">hub</span> with{" "}
+          <span className="font-mono text-[0.9em]">inspect</span> in any GitHub URL to
+          open the corresponding digest here.
+        </p>
+        <div>
+          <div className="mb-2 text-xs font-medium tracking-[0.18em] text-muted-foreground uppercase">
+            How it works
+          </div>
+          <ul className="list-disc space-y-2 pl-5 text-muted-foreground">
+            <li>
+              <span className="font-medium text-foreground">Research agent</span> — Pick
+              a repository and chat in natural language; answers are grounded in the
+              code.
+            </li>
+            <li>
+              <span className="font-medium text-foreground">Stack</span> — Built on
+              pi-mono, read-only shell via just-bash, and a virtual filesystem from the
+              GitHub API (just-github).
+            </li>
+            <li>
+              <span className="font-medium text-foreground">Private by design</span> —
+              Sessions, settings, provider keys, and usage stay on your device (Dexie /
+              IndexedDB); chat is client-side, with no backend for your data.
+            </li>
+            <li>
+              <span className="font-medium text-foreground">Local first</span> — Agent
+              execution runs in a per-tab dedicated worker; durable state stays on the
+              main thread.
+            </li>
+            <li>
+              <span className="font-medium text-foreground">Resilient by design</span> —
+              Lease ownership, runtime recovery, and interrupted-turn repair stay on the
+              main thread; the worker improves responsiveness, not hidden-tab guarantees.
+            </li>
+            <li>
+              <span className="font-medium text-foreground">Lazy loading</span> — Nothing
+              fetched at construction; everything on demand.
+            </li>
+            <li>
+              <span className="font-medium text-foreground">Tree cache</span> — Full repo
+              tree once via Git Trees API; stat, exists, and readdir from cache.
+            </li>
+            <li>
+              <span className="font-medium text-foreground">Content cache</span> — File
+              contents by blob SHA (content-addressable, never stale).
+            </li>
+            <li>
+              <span className="font-medium text-foreground">Smart API selection</span> —
+              Contents API for small files; raw endpoint for large files ({">"}1 MB).
+            </li>
+          </ul>
+        </div>
+        <p className="text-xs text-muted-foreground">
+          Unauthenticated GitHub API requests are limited to 60/hour; authenticated
+          requests get 5,000/hour. Set a GitHub token under GitHub settings to
+          avoid limits; the tree cache keeps actual API usage low after the initial load.
+        </p>
       </div>
 
-      <div className="text-xs text-muted-foreground">
-        Sessions, credentials, repository context, and usage data stay local in
-        your browser.
-      </div>
+      <Button asChild className="gap-2" variant="outline">
+        <a href={ABOUT_SOURCE_REPO_URL} rel="noreferrer" target="_blank">
+          <Icons.gitHub className="size-4" />
+          View source on GitHub
+        </a>
+      </Button>
     </div>
   )
 }
