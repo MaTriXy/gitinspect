@@ -1,0 +1,14 @@
+{
+  "extends": "@gitinspect/config/tsconfig.base.json",
+  "compilerOptions": {
+    "baseUrl": ".",
+    "lib": ["ESNext", "DOM", "DOM.Iterable"],
+    "types": ["vite/client"],
+    "paths": {
+      "@gitinspect/db/*": ["./src/*"],
+      "@gitinspect/pi/*": ["../pi/src/*"]
+    }
+  },
+  "include": ["src/**/*.ts", "src/**/*.tsx"],
+  "exclude": ["node_modules"]
+}

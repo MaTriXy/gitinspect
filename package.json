@@ -29,7 +29,8 @@
     "dev:web": "turbo -F web dev",
     "dev:tui": "turbo -F tui dev",
     "check": "oxlint && oxfmt --write",
-    "prepare": "husky"
+    "prepare": "husky",
+    "test": "vitest run"
   },
   "dependencies": {
     "@gitinspect/env": "workspace:*",
@@ -39,12 +40,14 @@
   "devDependencies": {
     "@gitinspect/config": "workspace:*",
     "@types/node": "catalog:",
+    "fake-indexeddb": "^6.2.5",
     "husky": "^9.1.7",
     "lint-staged": "^16.1.2",
     "oxfmt": "^0.26.0",
     "oxlint": "^1.41.0",
     "turbo": "^2.8.12",
-    "typescript": "^5"
+    "typescript": "^5",
+    "vitest": "^4.1.2"
   },
   "lint-staged": {
     "*": [

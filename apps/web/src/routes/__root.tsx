@@ -1,14 +1,38 @@
+import * as React from "react";
+import {
+  HeadContent,
+  Link,
+  Outlet,
+  Scripts,
+  createRootRoute,
+  retainSearchParams,
+  useNavigate,
+} from "@tanstack/react-router";
+import appCss from "../styles.css?url";
+import { AppSettingsDialog } from "@gitinspect/ui/components/settings-dialog";
+import { Analytics } from "@/components/analytics";
+import { AppHeader } from "@gitinspect/ui/components/app-header";
+import { AppSidebar } from "@gitinspect/ui/components/app-sidebar";
+import { RootGuard } from "@/components/root-guard";
+import { parseSettingsSection } from "@/navigation/search-state";
+import { SidebarInset, SidebarProvider } from "@gitinspect/ui/components/sidebar";
+import { TooltipProvider } from "@gitinspect/ui/components/tooltip";
 import { Toaster } from "@gitinspect/ui/components/sonner";
-import { HeadContent, Outlet, Scripts, createRootRouteWithContext } from "@tanstack/react-router";
-import { TanStackRouterDevtools } from "@tanstack/react-router-devtools";
+import { ThemeProvider } from "@gitinspect/ui/components/theme-provider";
 
-import Header from "../components/header";
+type RootSearchInput = {
+  settings?: string;
+  sidebar?: string;
+};
 
-import appCss from "../index.css?url";
-
-export interface RouterAppContext {}
-
-export const Route = createRootRouteWithContext<RouterAppContext>()({
+export const Route = createRootRoute({
+  validateSearch: (search: RootSearchInput) => ({
+    settings: parseSettingsSection(search.settings),
+    sidebar: search.sidebar === "open" ? "open" : undefined,
+  }),
+  search: {
+    middlewares: [retainSearchParams(["settings", "sidebar"])],
+  },
   head: () => ({
     meta: [
       {
@@ -19,7 +43,15 @@ export const Route = createRootRouteWithContext<RouterAppContext>()({
         content: "width=device-width, initial-scale=1",
       },
       {
-        title: "My App",
+        title: "gitinspect.com",
+      },
+      {
+        name: "description",
+        content: "Chat with any github repo",
+      },
+      {
+        name: "apple-mobile-web-app-title",
+        content: "gitinspect",
       },
     ],
     links: [
@@ -27,27 +59,111 @@ export const Route = createRootRouteWithContext<RouterAppContext>()({
         rel: "stylesheet",
         href: appCss,
       },
+      {
+        rel: "icon",
+        type: "image/png",
+        href: "/favicon-96x96.png",
+        sizes: "96x96",
+      },
+      {
+        rel: "icon",
+        type: "image/svg+xml",
+        href: "/favicon.svg",
+      },
+      {
+        rel: "shortcut icon",
+        href: "/favicon.ico",
+      },
+      {
+        rel: "apple-touch-icon",
+        sizes: "180x180",
+        href: "/apple-touch-icon.png",
+      },
+      {
+        rel: "manifest",
+        href: "/site.webmanifest",
+      },
     ],
   }),
-
-  component: RootDocument,
+  notFoundComponent: NotFoundPage,
+  shellComponent: RootDocument,
+  component: RootLayout,
+  ssr: false,
 });
 
-function RootDocument() {
+function RootDocument({ children }: { children: React.ReactNode }) {
   return (
-    <html lang="en" className="dark">
+    <html suppressHydrationWarning lang="en">
       <head>
         <HeadContent />
       </head>
       <body>
-        <div className="grid h-svh grid-rows-[auto_1fr]">
-          <Header />
-          <Outlet />
-        </div>
-        <Toaster richColors />
-        <TanStackRouterDevtools position="bottom-left" />
+        <ThemeProvider
+          attribute="class"
+          defaultTheme="system"
+          enableSystem
+          disableTransitionOnChange
+        >
+          <TooltipProvider>
+            <RootGuard>{children}</RootGuard>
+            <Toaster position="bottom-right" />
+          </TooltipProvider>
+        </ThemeProvider>
         <Scripts />
+        <Analytics />
       </body>
     </html>
+  );
+}
+
+function RootLayout() {
+  const navigate = useNavigate();
+  const search = Route.useSearch();
+  return (
+    <SidebarProvider
+      onOpenChange={(open) => {
+        void navigate({
+          search: (prev) => ({
+            ...prev,
+            sidebar: open ? "open" : undefined,
+          }),
+          to: ".",
+        });
+      }}
+      open={search.sidebar === "open"}
+    >
+      <div className="relative flex h-svh w-full overflow-hidden overscroll-none">
+        <AppSidebar />
+        <SidebarInset className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
+          <AppHeader />
+          <main className="flex min-h-0 flex-1 overflow-hidden">
+            <Outlet />
+          </main>
+        </SidebarInset>
+      </div>
+      <AppSettingsDialog />
+    </SidebarProvider>
+  );
+}
+
+function NotFoundPage() {
+  return (
+    <div className="flex min-h-screen flex-col items-center justify-center gap-3 px-6 text-center">
+      <h1 className="text-lg font-medium">Page not found</h1>
+      <p className="max-w-md text-xs text-muted-foreground">
+        The route does not exist or the dev server reloaded while the router was resolving the page.
+      </p>
+      <Link
+        className="text-xs underline underline-offset-4 hover:text-foreground"
+        search={{
+          tab: undefined,
+          settings: undefined,
+          sidebar: undefined,
+        }}
+        to="/"
+      >
+        Go back home
+      </Link>
+    </div>
   );
 }
