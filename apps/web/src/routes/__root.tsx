@@ -8,9 +8,10 @@ import {
   retainSearchParams,
   useNavigate,
 } from "@tanstack/react-router";
+import { Analytics as VercelAnalytics } from "@vercel/analytics/react";
+import { Analytics as OneDollarStats } from "@/components/analytics";
 import appCss from "../styles.css?url";
 import { AppSettingsDialog } from "@gitinspect/ui/components/settings-dialog";
-import { Analytics } from "@/components/analytics";
 import { AppHeader } from "@gitinspect/ui/components/app-header";
 import { AppSidebar } from "@gitinspect/ui/components/app-sidebar";
 import { RootGuard } from "@/components/root-guard";
@@ -110,7 +111,8 @@ function RootDocument({ children }: { children: React.ReactNode }) {
           </TooltipProvider>
         </ThemeProvider>
         <Scripts />
-        <Analytics />
+        <VercelAnalytics />
+        <OneDollarStats />
       </body>
     </html>
   );

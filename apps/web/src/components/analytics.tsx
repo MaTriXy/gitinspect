@@ -6,9 +6,9 @@ export function Analytics() {
     configure({
       autocollect: true,
       collectorUrl: "/api/e",
-      devmode: process.env.VERCEL_ENV !== "production",
+      devmode: import.meta.env.DEV,
       excludePages: ["/chat", "/chat/*"],
-      hostname: "gitinspect.com",
+      hostname: "www.gitingest.com",
     });
   }, []);
 

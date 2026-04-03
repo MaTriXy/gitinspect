@@ -8,6 +8,7 @@
     "check-types": "tsc --noEmit"
   },
   "dependencies": {
+    "@clack/prompts": "^1.2.0",
     "@opentui/core": "^0.1.95",
     "@opentui/react": "^0.1.95",
     "react": "^19.2.4"
