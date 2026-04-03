@@ -60,6 +60,40 @@ describe("auth service", () => {
     expect(setProviderKey).toHaveBeenCalledWith("openai-codex", "sk-test");
   });
 
+  it("imports oauth credentials from a login code", async () => {
+    const { importOAuthCredentials } = await import("@/auth/auth-service");
+    const payload = Buffer.from(
+      JSON.stringify({
+        access: "access",
+        expires: Date.now() + 60_000,
+        projectId: "project-1",
+        providerId: "google-gemini-cli",
+        refresh: "refresh",
+      }),
+      "utf8",
+    )
+      .toString("base64")
+      .replace(/\+/g, "-")
+      .replace(/\//g, "_")
+      .replace(/=+$/g, "");
+
+    await expect(importOAuthCredentials(payload)).resolves.toEqual({
+      access: "access",
+      expires: expect.any(Number),
+      projectId: "project-1",
+      providerId: "google-gemini-cli",
+      refresh: "refresh",
+    });
+    expect(setProviderKey.mock.calls[0]?.[0]).toBe("google-gemini-cli");
+    expect(JSON.parse(String(setProviderKey.mock.calls[0]?.[1]))).toEqual({
+      access: "access",
+      expires: expect.any(Number),
+      projectId: "project-1",
+      providerId: "google-gemini-cli",
+      refresh: "refresh",
+    });
+  });
+
   it("reports provider auth state from storage", async () => {
     getProviderKey.mockResolvedValue({
       provider: "openai-codex",

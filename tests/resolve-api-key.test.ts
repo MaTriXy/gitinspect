@@ -46,6 +46,7 @@ describe("resolveStoredApiKey", () => {
     });
     oauthRefresh.mockResolvedValue({
       access: "next-access",
+      accountId: "acct-1",
       expires: Date.now() + 120_000,
       providerId: "openai-codex",
       refresh: "next-refresh",
@@ -54,6 +55,7 @@ describe("resolveStoredApiKey", () => {
     const result = await resolveStoredApiKey(
       JSON.stringify({
         access: "old-access",
+        accountId: "acct-1",
         expires: Date.now() - 1,
         providerId: "openai-codex",
         refresh: "old-refresh",
@@ -73,6 +75,7 @@ describe("resolveStoredApiKey", () => {
     expect(setProviderKey.mock.calls[0]?.[0]).toBe("openai-codex");
     expect(JSON.parse(String(setProviderKey.mock.calls[0]?.[1]))).toMatchObject({
       access: "next-access",
+      accountId: "acct-1",
       expires: expect.any(Number),
       providerId: "openai-codex",
       refresh: "next-refresh",

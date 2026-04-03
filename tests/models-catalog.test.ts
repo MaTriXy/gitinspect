@@ -28,6 +28,7 @@ describe("model catalog", () => {
         provider: "openai-codex",
         value: serializeOAuthCredentials({
           access: "access-token",
+          accountId: "acct-1",
           expires: Date.now() + 60_000,
           providerId: "openai-codex",
           refresh: "refresh-token",

@@ -4,7 +4,11 @@ import { loginAnthropic } from "@gitinspect/pi/auth/providers/anthropic";
 import { loginGitHubCopilot } from "@gitinspect/pi/auth/providers/github-copilot";
 import { loginGeminiCli } from "@gitinspect/pi/auth/providers/google-gemini-cli";
 import { loginOpenAICodex } from "@gitinspect/pi/auth/providers/openai-codex";
-import { serializeOAuthCredentials, type OAuthCredentials } from "@gitinspect/pi/auth/oauth-types";
+import {
+  parseImportedOAuthCredentials,
+  serializeOAuthCredentials,
+  type OAuthCredentials,
+} from "@gitinspect/pi/auth/oauth-types";
 import type { ProxyRequestOptions } from "@gitinspect/pi/auth/oauth-utils";
 import type { ProviderAuthKind, ProviderAuthState } from "@gitinspect/pi/types/auth";
 import type { ProviderId } from "@gitinspect/pi/types/models";
@@ -51,6 +55,12 @@ export async function upsertProviderOAuth(
   credentials: OAuthCredentials,
 ): Promise<void> {
   await setProviderKey(provider, serializeOAuthCredentials(credentials));
+}
+
+export async function importOAuthCredentials(value: string): Promise<OAuthCredentials> {
+  const credentials = parseImportedOAuthCredentials(value);
+  await upsertProviderOAuth(credentials.providerId, credentials);
+  return credentials;
 }
 
 export async function setProviderApiKey(provider: ProviderId, value: string): Promise<void> {

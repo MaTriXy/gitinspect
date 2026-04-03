@@ -5,6 +5,7 @@ import type { ProviderGroupId, ProviderId } from "@gitinspect/pi/types/models";
 import {
   disconnectProvider,
   getOAuthProviderName,
+  importOAuthCredentials,
   oauthLogin,
   setProviderApiKey,
   type OAuthProviderId,
@@ -24,6 +25,7 @@ import {
 } from "@gitinspect/pi/proxy/settings";
 import { Button } from "@gitinspect/ui/components/button";
 import { Input } from "@gitinspect/ui/components/input";
+import { Textarea } from "@gitinspect/ui/components/textarea";
 import {
   Item,
   ItemActions,
@@ -97,6 +99,8 @@ export function ProviderSettings(props: { onNavigateToProxy?: () => void }) {
       >
     >
   >({});
+  const [importValue, setImportValue] = React.useState("");
+  const [isImporting, setIsImporting] = React.useState(false);
 
   React.useEffect(() => {
     setDraftValues(
@@ -247,6 +251,51 @@ export function ProviderSettings(props: { onNavigateToProxy?: () => void }) {
               </div>
             );
           })}
+
+          <Item className="items-start" variant="outline">
+            <ItemContent className="min-w-0">
+              <ItemTitle className="text-sm font-medium text-foreground">
+                Import login code
+              </ItemTitle>
+              <ItemDescription>
+                Run <span className="font-medium text-foreground">gitinspect login</span> in your
+                terminal, then paste the base64 or JSON payload here to connect your subscription.
+              </ItemDescription>
+              <div className="mt-2 w-full space-y-2">
+                <Textarea
+                  autoComplete="off"
+                  className="min-h-24"
+                  onChange={(event) => setImportValue(event.target.value)}
+                  placeholder="Paste the login code from gitinspect login"
+                  value={importValue}
+                />
+                <div className="flex justify-end">
+                  <Button
+                    disabled={isImporting || importValue.trim().length === 0}
+                    onClick={async () => {
+                      setIsImporting(true);
+
+                      try {
+                        const credentials = await importOAuthCredentials(importValue);
+                        setImportValue("");
+                        toast.success(`${getOAuthProviderName(credentials.providerId)} connected`);
+                      } catch (error) {
+                        toast.error(
+                          error instanceof Error ? error.message : "Could not import login code",
+                        );
+                      } finally {
+                        setIsImporting(false);
+                      }
+                    }}
+                    size="sm"
+                    variant="secondary"
+                  >
+                    Import login code
+                  </Button>
+                </div>
+              </div>
+            </ItemContent>
+          </Item>
         </div>
       </section>
 
