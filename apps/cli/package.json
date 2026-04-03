@@ -1,5 +1,5 @@
 {
-  "name": "gitinspect",
+  "name": "@gitinspect/cli",
   "version": "0.1.0",
   "bin": {
     "gitinspect": "./dist/index.js"

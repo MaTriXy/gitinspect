@@ -77,7 +77,14 @@ GitInspect app import is supported separately by pasting the generated login cod
 
 ## Packaging
 
-The published npm package is self-contained and does not depend on unpublished workspace packages at runtime. It builds to normal Node-compatible JavaScript in `dist/` and exposes the `gitinspect` binary for `npx gitinspect ...` and `bunx gitinspect ...`.
+The published npm package is self-contained and does not depend on unpublished workspace packages at runtime. It builds to normal Node-compatible JavaScript in `dist/` and exposes the `gitinspect` binary from the scoped package `@gitinspect/cli`.
+
+Example:
+
+```bash
+npx @gitinspect/cli login
+bunx @gitinspect/cli login
+```
 
 ## Implementation
 

@@ -1,5 +1,5 @@
 {
-  "name": "gitinspect-mono",
+  "name": "gitinspect",
   "private": true,
   "workspaces": {
     "packages": [
@@ -27,7 +27,7 @@
     "build": "turbo build",
     "check-types": "turbo check-types",
     "dev:web": "turbo -F web dev",
-    "dev:cli": "turbo -F gitinspect dev",
+    "dev:cli": "turbo -F @gitinspect/cli dev",
     "check": "oxlint && oxfmt --write",
     "prepare": "husky",
     "test": "vitest run"

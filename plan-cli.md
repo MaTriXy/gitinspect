@@ -41,7 +41,7 @@ The CLI must:
 ### Naming and structure
 
 - binary command: **`gitinspect`**
-- workspace package name: **`gitinspect`**
+- workspace package name: **`@gitinspect/cli`**
 - rename folder:
   - from `apps/tui`
   - to `apps/cli`
@@ -564,7 +564,7 @@ Turn the current `apps/tui` stub into a correctly named CLI package.
 
 - [x] Rename folder `apps/tui` → `apps/cli`
 - [x] Update `apps/cli/package.json`
-  - [x] rename package to `gitinspect`
+  - [x] rename package to `@gitinspect/cli`
   - [x] remove OpenTUI dependencies
   - [x] remove React dependency
   - [x] add `@clack/prompts`
@@ -894,11 +894,11 @@ There are **no remaining open product or architecture decisions** for this follo
 
 The agreed decisions are:
 
-- [x] the publishable npm package should be named **`gitinspect`**
+- [x] the publishable npm package should be named **`@gitinspect/cli`**
 - [x] users should be able to run:
-  - [x] `npx gitinspect login`
-  - [x] `bunx gitinspect login`
-- [x] the private monorepo root package should be renamed to **`gitinspect-mono`**
+  - [x] `npx @gitinspect/cli login`
+  - [x] `bunx @gitinspect/cli login`
+- [x] the private monorepo root package should be named **`gitinspect`**
 - [x] the publishable CLI should be **self-contained** and must not depend on unpublished workspace packages at runtime
 - [x] the CLI should build to normal JavaScript in `dist/` for the npm path
 - [x] the npm `bin` should point at `./dist/index.js`
@@ -930,13 +930,13 @@ So the correct model is:
 
 #### Private monorepo root
 
-The private root package should be renamed from `gitinspect` to `gitinspect-mono`.
+The private root package remains `gitinspect`.
 
 Recommended root `package.json` shape:
 
 ```json
 {
-  "name": "gitinspect-mono",
+  "name": "gitinspect",
   "private": true,
   "workspaces": {
     "packages": ["apps/*", "packages/*"]
@@ -946,13 +946,13 @@ Recommended root `package.json` shape:
 
 #### Publishable CLI package
 
-The CLI package in `apps/cli` should become the public npm package `gitinspect`.
+The CLI package in `apps/cli` should become the public npm package `@gitinspect/cli`.
 
 Recommended `apps/cli/package.json` shape:
 
 ```json
 {
-  "name": "gitinspect",
+  "name": "@gitinspect/cli",
   "version": "0.1.0",
   "type": "module",
   "bin": {
@@ -1129,8 +1129,8 @@ bun publish ./gitinspect-0.1.0.tgz
 
 #### Package verification
 
-- [x] root package has been renamed to `gitinspect-mono`
-- [x] `apps/cli/package.json` is named `gitinspect`
+- [x] root package is named `gitinspect`
+- [x] `apps/cli/package.json` is named `@gitinspect/cli`
 - [x] `bin.gitinspect` points to `./dist/index.js`
 - [x] `files` only includes publishable artifacts
 - [x] no unpublished workspace package remains in CLI runtime dependencies
@@ -1150,19 +1150,19 @@ bun publish ./gitinspect-0.1.0.tgz
 
 #### Invocation verification
 
-- [x] `npx gitinspect login --help` works after publish
-- [x] `bunx gitinspect login --help` works after publish
-- [x] `npx gitinspect login -p codex` works after publish
-- [x] `bunx gitinspect login -p codex` works after publish
+- [x] `npx @gitinspect/cli login --help` works after publish
+- [x] `bunx @gitinspect/cli login --help` works after publish
+- [x] `npx @gitinspect/cli login -p codex` works after publish
+- [x] `bunx @gitinspect/cli login -p codex` works after publish
 
 ### Acceptance criteria for this follow-up
 
 This follow-up is complete when all of the following are true:
 
-- the private root package is named `gitinspect-mono`
-- the publishable CLI package is named `gitinspect`
-- users can run `npx gitinspect login`
-- users can run `bunx gitinspect login`
+- the private root package is named `gitinspect`
+- the publishable CLI package is named `@gitinspect/cli`
+- users can run `npx @gitinspect/cli login`
+- users can run `bunx @gitinspect/cli login`
 - the npm package ships a normal JS `bin` entry in `dist/`
 - the CLI package is self-contained and does not rely on unpublished workspace packages at runtime
 - no Bun single-file executable path is introduced for this scope
