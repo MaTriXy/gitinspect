@@ -57,7 +57,7 @@ Default output is a base64url-encoded raw `OAuthCredentials` JSON payload.
 gitinspect login -p codex
 ```
 
-The CLI copies the sign-in URL to your clipboard when auth starts, then copies the final login code to your clipboard after success. In the default mode it also tells you to paste the last line back into the GitInspect app. For callback-server providers, the manual redirect/code prompt only appears after a short wait if the browser callback does not finish automatically.
+The CLI copies the sign-in URL to your clipboard when auth starts, then waits for you to press Enter before opening the browser. After success it copies the final login code to your clipboard and tells you to paste the code back inside gitinspect.com. For callback-server providers, the manual redirect/code prompt only appears after a short wait if the browser callback does not finish automatically.
 
 `--print-json` prints the raw `OAuthCredentials` object directly.
 

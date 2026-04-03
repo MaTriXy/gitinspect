@@ -60,8 +60,8 @@ export async function runLoginCommand(
     } else {
       log.warn("Could not copy the login code to your clipboard.");
     }
-    log.info("Paste the last line back into the GitInspect app.");
-    write(`${payload}\n`);
+    log.info("Paste the code back inside gitinspect.com");
+    write(`\n${payload}\n`);
   } catch (error) {
     bridge.cancelPendingManualCodeInput();
     bridge.clearProgress();

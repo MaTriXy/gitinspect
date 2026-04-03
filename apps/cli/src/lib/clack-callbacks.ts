@@ -144,8 +144,9 @@ export function createClackCallbacks(options: ClackBridgeOptions = {}): ClackBri
 
       const lines = [
         "1. Open the sign-in link below.",
-        "2. Complete the provider login flow in your browser.",
-        "3. If the browser callback does not finish automatically, this CLI will ask for the redirect URL or code after a short wait.",
+        "2. Press ENTER below to open it in your browser.",
+        "3. Complete the provider login flow in your browser.",
+        "4. If the browser callback does not finish automatically, this CLI will ask for the redirect URL or code after a short wait.",
         "",
         info.url,
       ];
@@ -164,13 +165,28 @@ export function createClackCallbacks(options: ClackBridgeOptions = {}): ClackBri
         renderLog.warn("Could not copy the sign-in link to your clipboard.");
       });
 
-      void openBrowserUrl(info.url).then((opened) => {
-        if (opened) {
-          renderLog.step("Opened browser.");
-          return;
-        }
-        renderLog.warn("Could not open browser automatically. Open the URL manually.");
-      });
+      void runPrompt(
+        {
+          allowEmpty: true,
+          message: "Press ENTER to open the browser",
+        },
+        options.signal,
+      )
+        .then(async () => await openBrowserUrl(info.url))
+        .then((opened) => {
+          if (opened) {
+            renderLog.step("Opened browser.");
+            return;
+          }
+          renderLog.warn("Could not open browser automatically. Open the URL manually.");
+        })
+        .catch((error: unknown) => {
+          if (error instanceof LoginCancelledError) {
+            renderLog.warn("Browser was not opened automatically. Open the URL manually.");
+            return;
+          }
+          renderLog.warn("Could not open browser automatically. Open the URL manually.");
+        });
     },
     onManualCodeInput() {
       return promptForManualCodeInput();

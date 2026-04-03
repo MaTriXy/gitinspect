@@ -58,7 +58,7 @@ describe("login command", () => {
       "eyJhY2Nlc3MiOiJhY2Nlc3MiLCJleHBpcmVzIjoxMjMsInByb3ZpZGVySWQiOiJvcGVuYWktY29kZXgiLCJyZWZyZXNoIjoicmVmcmVzaCIsImFjY291bnRJZCI6ImFjY3QtMSJ9",
     );
     expect(write).toHaveBeenCalledWith(
-      "eyJhY2Nlc3MiOiJhY2Nlc3MiLCJleHBpcmVzIjoxMjMsInByb3ZpZGVySWQiOiJvcGVuYWktY29kZXgiLCJyZWZyZXNoIjoicmVmcmVzaCIsImFjY291bnRJZCI6ImFjY3QtMSJ9\n",
+      "\neyJhY2Nlc3MiOiJhY2Nlc3MiLCJleHBpcmVzIjoxMjMsInByb3ZpZGVySWQiOiJvcGVuYWktY29kZXgiLCJyZWZyZXNoIjoicmVmcmVzaCIsImFjY291bnRJZCI6ImFjY3QtMSJ9\n",
     );
   });
 

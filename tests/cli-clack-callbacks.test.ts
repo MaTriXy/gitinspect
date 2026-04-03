@@ -46,6 +46,7 @@ describe("clack callback bridge", () => {
   });
 
   it("bridges auth, clipboard, and progress callbacks", async () => {
+    textMock.mockResolvedValueOnce("");
     const copyToClipboard = vi.fn().mockResolvedValue(true);
     const { createClackCallbacks } = await import("../apps/cli/src/lib/clack-callbacks");
     const bridge = createClackCallbacks({
@@ -64,8 +65,9 @@ describe("clack callback bridge", () => {
     expect(noteMock).toHaveBeenCalledWith(
       [
         "1. Open the sign-in link below.",
-        "2. Complete the provider login flow in your browser.",
-        "3. If the browser callback does not finish automatically, this CLI will ask for the redirect URL or code after a short wait.",
+        "2. Press ENTER below to open it in your browser.",
+        "3. Complete the provider login flow in your browser.",
+        "4. If the browser callback does not finish automatically, this CLI will ask for the redirect URL or code after a short wait.",
         "",
         "https://example.com",
         "",
@@ -74,9 +76,15 @@ describe("clack callback bridge", () => {
       "Authentication",
     );
 
-    await Promise.resolve();
+    await new Promise((resolve) => setTimeout(resolve, 0));
     expect(copyToClipboard).toHaveBeenCalledWith("https://example.com");
     expect(logMock.step).toHaveBeenCalledWith("Copied the sign-in link to your clipboard.");
+    expect(textMock).toHaveBeenCalledWith({
+      message: "Press ENTER to open the browser",
+      placeholder: undefined,
+      signal: undefined,
+      validate: undefined,
+    });
     expect(logMock.step).toHaveBeenCalledWith("Opened browser.");
   });
 
