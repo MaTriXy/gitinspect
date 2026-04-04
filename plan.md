@@ -1,151 +1,45 @@
-# Durable fix plan: transcript/runtime split + orphaned tool-result cleanup
+# Event-sourced turn plan: kill orphaned tool results + stop snapshot reconstruction
 
-## locked decisions
+## intent
 
-1. **repair historical bad rows on read, with write-back**
-   - when a session is loaded, run linker/canonicalizer
-   - rewrite wrong `parentAssistantId`
-   - drop true orphan tool results
-   - persist cleaned rows back once
+Adopt the **bigger but simpler** design fully.
 
-2. **keep a short compat window**
-   - runtime `phase` becomes source of truth
-   - legacy `session.isStreaming` / `status` can be mirrored temporarily
-   - delete later after callers move
+Do this:
 
-3. **single ownership law**
-   - tool-result ownership derived from assistant `toolCall.id`
-   - not from stored `parentAssistantId`
-   - not from positional scan
-   - not from replay-only pruning
+- persist exact `message_end` events into transcript
+- persist exact assistant `message_start/message_update` partial into runtime
+- stop reconstructing transcript from snapshots
+- stop using transcript repair as the steady-state mechanism
+- keep Dexie livequery UX
+- no UX regression
 
-4. **streaming stays in Dexie, but in `session_runtime`, not `messages`**
+Legacy exception only:
 
-5. **one session view-model livequery**
-   - selector merges transcript + runtime + linking before UI sees data
+- do **one-time repair-on-read with write-back** for historical bad rows already in Dexie
+- that is migration hygiene, not runtime architecture
 
 ---
 
-## condensed implementation steps
+## hard requirements
 
-### phase 1. fix read-path first
-
-- add shared linker
-- use linker in:
-  - `packages/pi/src/lib/chat-adapter.ts`
-  - `packages/pi/src/agent/message-transformer.ts`
-  - `packages/pi/src/lib/copy-session-markdown.ts`
-  - `packages/pi/src/lib/export-markdown.ts`
-- repair historical rows on load in:
-  - `packages/pi/src/sessions/session-service.ts`
-
-### phase 2. move streaming state to runtime row
-
-- extend runtime row + helpers:
-  - `packages/db/src/storage-types.ts`
-  - `packages/db/src/session-runtime.ts`
-- add:
-  - `phase`
-  - `streamMessage`
-  - `pendingToolCallOwners`
-
-### phase 3. replace snapshot reconstruction with event-driven writes
-
-- create `packages/pi/src/agent/turn-event-store.ts`
-- migrate:
-  - `packages/pi/src/agent/agent-host.ts`
-  - `packages/pi/src/agent/runtime-worker.ts`
-  - `packages/pi/src/agent/worker-backed-agent-host.ts`
-- eventually replace `packages/pi/src/agent/agent-turn-persistence.ts`
-
-### phase 4. move chat UI to one selector
-
-- create `packages/pi/src/sessions/session-view-model.ts`
-- update `packages/ui/src/components/chat.tsx`
-
-### phase 5. shrink FSM
-
-- runtime `phase` becomes core truth:
-  - `idle`
-  - `running`
-  - `interrupted`
-- update:
-  - `packages/pi/src/sessions/session-view-state.ts`
-  - `packages/pi/src/agent/runtime-client.ts`
-  - `packages/pi/src/sessions/session-notices.ts`
+1. **no UX regression**
+2. **no transcript `streaming` rows** in steady state
+3. **one ownership law** for tool results: assistant `toolCall.id`
+4. **one view-model selector** for chat UI
+5. **runtime phase** becomes primary state truth
+6. **legacy repair-on-read** remains, but only as migration cleanup
 
 ---
 
-## files an agent should read first
+## why this is the right cut. evidence first
 
-### mandatory
-
-1. `plan.md`
-2. `packages/ui/src/components/chat.tsx`
-3. `packages/pi/src/sessions/session-service.ts`
-4. `packages/db/src/storage-types.ts`
-5. `packages/db/src/session-runtime.ts`
-6. `packages/db/src/schema.ts`
-7. `packages/pi/src/agent/session-adapter.ts`
-8. `packages/pi/src/lib/chat-adapter.ts`
-9. `packages/pi/src/agent/message-transformer.ts`
-10. `packages/pi/src/agent/agent-turn-persistence.ts`
-
-### runtime/event flow
-
-11. `packages/pi/src/agent/agent-host.ts`
-12. `packages/pi/src/agent/runtime-worker-types.ts`
-13. `packages/pi/src/agent/runtime-worker.ts`
-14. `packages/pi/src/agent/worker-backed-agent-host.ts`
-15. `packages/pi/src/agent/runtime-client.ts`
-16. `packages/pi/src/sessions/session-view-state.ts`
-17. `packages/pi/src/sessions/session-notices.ts`
-
-### upstream semantics
-
-18. `node_modules/@mariozechner/pi-agent-core/dist/agent-loop.js`
-19. `node_modules/@mariozechner/pi-agent-core/dist/agent.js`
-
-### tests before edits
-
-20. `tests/agent-host-persistence.test.ts`
-21. `tests/message-transformer.test.ts`
-22. `tests/session-notices.test.ts`
-23. `tests/runtime-worker.test.ts`
-24. `tests/chat-adapter.test.ts`
-25. `tests/chat-message.test.tsx`
-26. `tests/copy-session-markdown.test.ts`
-
-### new tests to add
-
-27. `tests/tool-result-linker.test.ts`
-28. `tests/session-view-model.test.ts`
-29. `tests/turn-event-store.test.ts`
-
----
-
-## 0. outcome
-
-Ship a refactor that:
-
-- fixes orphaned tool results in UI, replay, export, interruption recovery
-- keeps live Dexie-driven UI updates
-- simplifies runtime state + FSM
-- stops writing in-flight junk into canonical transcript
-- supports future parallel tool execution without another rewrite
-
----
-
-## 1. facts from code. ground truth first
-
-### 1.1 UI is livequery-driven from Dexie already. but not from one source
+## 1. current UI already reads Dexie from more than one place
 
 `packages/ui/src/components/chat.tsx:148-168`
 
 ```ts
 const loadedSessionState = useLiveQuery(async (): Promise<LoadedSessionState> => {
   const loaded = await loadSessionWithMessages(props.sessionId);
-  ...
   return {
     kind: "active",
     messages: loaded.messages,
@@ -158,13 +52,6 @@ const sessionRuntime = useLiveQuery(
   [props.sessionId],
 );
 ```
-
-So chat already depends on:
-
-- transcript rows from `messages`
-- session row
-- runtime row
-- in-memory `runtimeClient.hasActiveTurn(...)`
 
 `packages/ui/src/components/chat.tsx:231-259`
 
@@ -185,7 +72,12 @@ const activeSessionViewState = React.useMemo(
       : undefined,
 ```
 
-### 1.2 transcript currently stores in-flight state
+Fact:
+
+- UI already depends on transcript + runtime + in-memory local runner.
+- So moving streaming state from transcript to runtime is not a new UI concept.
+
+## 2. transcript currently stores in-flight state. this is the architectural smell
 
 `packages/db/src/storage-types.ts:47-71`
 
@@ -216,46 +108,37 @@ export class AgentTurnPersistence {
   private lastTerminalStatus: TerminalAssistantStatus = undefined;
 ```
 
-This is a smell. transcript persistence is carrying runtime bookkeeping.
+Fact:
 
-### 1.3 tool results start with no owner
+- transcript persistence is carrying runtime bookkeeping.
+- that is why repair/diff/id-rotation logic exists.
+
+## 3. tool-result ownership already disagrees across subsystems
+
+### tool results are born without owner
 
 `packages/pi/src/agent/session-adapter.ts:36-50`
 
 ```ts
-function normalizeMessage(message: Message, index: number): ChatMessage {
-  ...
-  case "toolResult":
-    return {
-      ...message,
-      id,
-      parentAssistantId: "",
-    } satisfies ToolResultMessage;
+case "toolResult":
+  return {
+    ...message,
+    id,
+    parentAssistantId: "",
+  } satisfies ToolResultMessage;
 ```
 
-### 1.4 ownership is inferred in 3 different ways today
+### persistence infers owner by position
 
-#### persistence: positional scan
-
-`packages/pi/src/agent/agent-turn-persistence.ts:383-412`
+`packages/pi/src/agent/agent-turn-persistence.ts:398-412`
 
 ```ts
-let activeAssistantId: string | undefined;
-
-return normalizedMessages.map((message) => {
-  if (message.role === "assistant") {
-    messageId = this.assignedAssistantIds.get(message.id) ?? message.id;
-    activeAssistantId = messageId;
-  }
-
-  const row = toMessageRow(...);
-
-  if (row.role === "toolResult" && activeAssistantId) {
-    row.parentAssistantId = activeAssistantId;
-  }
+if (row.role === "toolResult" && activeAssistantId) {
+  row.parentAssistantId = activeAssistantId;
+}
 ```
 
-#### replay: seen `toolCallId`
+### replay infers validity by seen `toolCallId`
 
 `packages/pi/src/agent/message-transformer.ts:71-90`
 
@@ -267,7 +150,7 @@ if (message.role === "toolResult") {
 }
 ```
 
-#### UI: trust stored `parentAssistantId`
+### UI trusts stored `parentAssistantId`
 
 `packages/pi/src/lib/chat-adapter.ts:39-65`
 
@@ -281,33 +164,12 @@ if (next.parentAssistantId === message.id) {
 }
 ```
 
-This split is root cause class. same fact. 3 rules.
+Fact:
 
-### 1.5 final persistence still writes partial diffs, not canonical full rows
+- same relationship. 3 laws.
+- orphan bugs are inevitable until this becomes one law.
 
-`packages/pi/src/agent/agent-turn-persistence.ts:568-585`
-
-```ts
-await this.persistSessionBoundary(
-  {
-    error: undefined,
-    isStreaming: false,
-  },
-  [terminalAssistant],
-  rowsForDerivation,
-);
-```
-
-`packages/pi/src/agent/agent-turn-persistence.ts:669-676`
-
-```ts
-if (changedMessages.length > 0) {
-  await putSessionAndMessages(this.session, changedMessages);
-```
-
-So session derivation can use one row set while DB write persists another.
-
-### 1.6 worker protocol is snapshot/repair oriented, not event/reducer oriented
+## 4. current worker protocol is snapshot/repair oriented
 
 `packages/pi/src/agent/runtime-worker-types.ts:7-19`
 
@@ -357,9 +219,13 @@ if (envelope.rotateStreamingAssistantDraft) {
 }
 ```
 
-This is patch-on-patch territory.
+Fact:
 
-### 1.7 upstream event order is stable enough for a cleaner design
+- runtime emits snapshots
+- persistence reconstructs transcript from snapshots
+- extra flags exist only to patch state mismatches
+
+## 5. upstream already gives exact event boundaries. we can trust events instead of snapshots
 
 `node_modules/@mariozechner/pi-agent-core/dist/agent-loop.js:103-121`
 
@@ -408,90 +274,136 @@ case "message_end":
   break;
 ```
 
-Meaning:
+Fact:
 
-- completed messages already arrive at exact boundaries
-- we do not need to reconstruct canonical history from snapshots
+- completed messages arrive exactly at `message_end`
+- partial assistant exists exactly at `message_start/message_update`
+- tool results already carry stable `toolCallId`
 
-### 1.8 Dexie schema already allows richer runtime rows
+This is enough to go event-sourced for a turn.
 
-`packages/db/src/schema.ts:150-157`
+---
+
+## no UX regression. explicit guarantees + evidence
+
+## current UX constraints to preserve
+
+### A. streaming placeholder must still show before text appears
+
+`packages/ui/src/components/chat-message.tsx:166-176`
 
 ```ts
-this.version(2).stores({
+const isStreamingAssistant = "status" in message && message.status === "streaming";
+const showStreamingPlaceholder =
+  isStreamingAssistant &&
+  view.text.length === 0 &&
+  view.reasoning.length === 0 &&
+  view.toolExecutions.length === 0;
+...
+<StatusShimmer duration={1.5}>Assistant is streaming...</StatusShimmer>
+```
+
+`tests/chat-message.test.tsx:44-55`
+
+```ts
+it("shows a streaming placeholder before the assistant emits text", async () => {
   ...
-  session_runtime: "sessionId, status, ownerTabId, lastProgressAt, updatedAt",
-  sessions: "id, updatedAt, createdAt, provider, model, isStreaming",
+  expect(screen.getByRole("status").textContent).toContain("Assistant is streaming...");
 });
 ```
 
-Important: IndexedDB objects can carry extra **unindexed** fields without changing store definition. So we can extend `session_runtime` row shape first, without immediate DB version bump, as long as indexes stay the same.
+### B. whole chat still shows streaming status
+
+`packages/ui/src/components/chat.tsx:572-578`
+
+```ts
+{chatPanelMode === "starting" ? (
+  <StatusShimmer>Starting session...</StatusShimmer>
+) : chatPanelMode === "streaming_pending" ? (
+  <StatusShimmer>Assistant is streaming...</StatusShimmer>
+```
+
+`tests/chat-state.test.tsx:311-315`
+
+```ts
+render(<Chat sessionId="session-1" />);
+expect(screen.getByRole("status").textContent).toContain("Assistant is streaming...");
+```
+
+### C. tool-result boundaries are expected to flush immediately
+
+`tests/runtime-worker.test.ts:255-286`
+
+```ts
+it("flushes tool-result boundaries immediately", async () => {
+  ...
+  expect(pushSnapshot).toHaveBeenCalledWith(
+    expect.objectContaining({
+      rotateStreamingAssistantDraft: true,
+      sessionId: "session-1",
+    }),
+  );
+});
+```
+
+Current worker also flushes aggressively:
+`packages/pi/src/agent/runtime-worker.ts:233-258`
+
+```ts
+const force =
+  event.type === "message_end" ||
+  event.type === "turn_end" ||
+  (!snapshot.isStreaming && this.latestTerminalStatus !== undefined);
+...
+this.flushTimer = setTimeout(() => {
+  ...
+}, SNAPSHOT_FLUSH_MS);
+```
+
+Fact:
+
+- UX depends on low-latency runtime writes, not on transcript snapshots specifically.
+
+## design response
+
+To preserve UX:
+
+1. keep Dexie livequery
+2. write partial assistant into `session_runtime.streamMessage` on every `message_start/message_update`
+3. append completed rows to `messages` on every `message_end`
+4. build a **single session view-model** from `session + transcript + runtime`
+5. project `runtime.streamMessage` into display as a synthetic assistant message with `status: "streaming"` for existing component compatibility
+
+So UX stays same or gets better:
+
+- same livequery model
+- fewer inconsistent states
+- no snapshot diff lag
 
 ---
 
-## 2. target invariants
+## target steady-state architecture
 
-### 2.1 canonical transcript only stores completed history
+## 1. transcript = canonical completed history only
 
-Allowed in `messages` table:
+`messages` table stores only completed rows:
 
-- completed user messages
-- completed assistant messages
-- completed tool results
-- completed system notices
+- `user`
+- `assistant`
+- `toolResult`
+- `system`
 
-Not allowed anymore:
+Steady-state ban:
 
-- `status: "streaming"` transcript rows
-- speculative draft assistant rows
-- tool results whose owner cannot be proven
+- no `status: "streaming"` transcript rows
+- no speculative assistant rows
+- no tool results with unknown owner
 
-### 2.2 in-flight state lives in runtime row
+## 2. runtime = in-flight turn buffer only
 
-Runtime row owns:
+Use `session_runtime` as the only place for active turn state.
 
-- phase (`idle` | `running` | `interrupted`)
-- `streamMessage` partial assistant
-- progress/error metadata
-- optional current turn metadata
-
-### 2.3 one rule for tool-result ownership
-
-Source of truth:
-
-- assistant `toolCall.id`
-- not stored `parentAssistantId`
-- not incidental position
-- not replay-only pruning
-
-### 2.4 UI / replay / export all consume same linker
-
-No more 3 ownership rules.
-
-### 2.5 keep Dexie livequery UX
-
-Streaming still comes from Dexie.
-
-Difference:
-
-- completed rows -> `messages`
-- partial current assistant -> `session_runtime`
-
----
-
-## 3. target architecture
-
-## 3.1 split durable transcript from runtime turn state
-
-### transcript
-
-Append-only completed rows.
-
-### runtime
-
-Single row per session. holds active turn state only.
-
-Suggested runtime shape:
+Proposed shape:
 
 ```ts
 export type RuntimePhase = "idle" | "running" | "interrupted";
@@ -505,247 +417,83 @@ export interface SessionRuntimeRow {
   lastError?: string;
   updatedAt: string;
 
-  // partial assistant only. never written to messages table.
+  // partial assistant only
   streamMessage?: AssistantMessage;
 
-  // optional. useful during active tool phase. keyed by toolCallId.
+  // toolCall.id -> assistant.id
   pendingToolCallOwners?: Record<string, string>;
 
-  // temporary compat. keep until old callers are deleted.
+  // compat during migration only
   status?: SessionRuntimeStatus;
   assistantMessageId?: string;
   startedAt?: string;
 }
 ```
 
-Why this is enough:
+Why no `completedDelta`:
 
-- completed messages append directly to transcript on `message_end`
-- only partial assistant needs a runtime buffer
-- tool results can be linked using `pendingToolCallOwners[toolCallId]`
+- upstream already emits exact `message_end` boundaries for completed rows
+- append completed rows directly to transcript
+- keep runtime lean
 
-### note
-
-Do **not** put `completedDelta` in runtime unless later proven necessary. start simpler. completed messages already have exact `message_end` boundaries upstream.
-
----
-
-## 3.2 single shared linker
+## 3. one linker is the ownership law
 
 Create:
 
-`packages/pi/src/agent/tool-result-linker.ts`
+- `packages/pi/src/agent/tool-result-linker.ts`
 
-Core API:
+Rule:
+
+- assistant tool calls register `toolCall.id -> assistant.id`
+- toolResult must match a real `toolCall.id`
+- if yes: rewrite `parentAssistantId` to owning assistant id
+- if no: orphan, drop
+
+Suggested API:
 
 ```ts
-import type { ChatMessage, ToolCall, ToolResultMessage } from "@gitinspect/pi/types/chat";
-
 export interface LinkedToolExecution {
   assistantId: string;
   toolCall: ToolCall;
   toolResult?: ToolResultMessage;
 }
 
-export interface LinkedTranscript {
+export function linkToolResults(messages: readonly ChatMessage[]): {
   messages: ChatMessage[];
   changed: boolean;
   executionsByAssistantId: ReadonlyMap<string, readonly LinkedToolExecution[]>;
-}
-
-export function linkToolResults(messages: readonly ChatMessage[]): LinkedTranscript {
-  const pending = new Map<string, { assistantId: string; toolCall: ToolCall }>();
-  const executionsByAssistantId = new Map<string, LinkedToolExecution[]>();
-  const out: ChatMessage[] = [];
-  let changed = false;
-
-  for (const message of messages) {
-    if (message.role === "assistant") {
-      out.push(message);
-      const toolCalls = message.content.filter(
-        (part): part is ToolCall => part.type === "toolCall",
-      );
-      if (toolCalls.length > 0) {
-        executionsByAssistantId.set(
-          message.id,
-          toolCalls.map((toolCall) => ({ assistantId: message.id, toolCall })),
-        );
-        for (const toolCall of toolCalls)
-          pending.set(toolCall.id, { assistantId: message.id, toolCall });
-      }
-      continue;
-    }
-
-    if (message.role === "toolResult") {
-      const owner = pending.get(message.toolCallId);
-      if (!owner) {
-        changed = true; // orphan dropped
-        continue;
-      }
-
-      pending.delete(message.toolCallId);
-      const linked: ToolResultMessage =
-        message.parentAssistantId === owner.assistantId
-          ? message
-          : { ...message, parentAssistantId: owner.assistantId };
-
-      if (linked !== message) changed = true;
-      out.push(linked);
-
-      const executions = executionsByAssistantId.get(owner.assistantId);
-      const execution = executions?.find((entry) => entry.toolCall.id === message.toolCallId);
-      if (execution) execution.toolResult = linked;
-      continue;
-    }
-
-    out.push(message);
-  }
-
-  return { messages: out, changed, executionsByAssistantId };
-}
+} { ... }
 ```
 
-Rules:
+This helper is used by:
 
-- assistant tool calls create pending ownership by `toolCall.id`
-- tool result must match pending `toolCall.id`
-- if no match -> drop
-- if stored `parentAssistantId` wrong/missing -> rewrite
-- works for 1 tool, N tools, future parallel, repeated turns
+- UI
+- replay transformer
+- markdown export
+- legacy repair-on-read
 
-This linker becomes the only ownership law.
-
----
-
-## 3.3 event-driven persistence. no snapshot reconstruction
-
-Replace `AgentTurnPersistence` with a reducer/store driven by exact agent events.
+## 4. one session view-model selector
 
 Create:
 
-`packages/pi/src/agent/turn-event-store.ts`
+- `packages/pi/src/sessions/session-view-model.ts`
 
-Core reducer shape:
+Selector reads:
 
-```ts
-import type { AgentEvent } from "@mariozechner/pi-agent-core";
-import type {
-  ChatMessage,
-  AssistantMessage,
-  ToolResultMessage,
-  ToolCall,
-} from "@gitinspect/pi/types/chat";
+- `session`
+- `messages`
+- `session_runtime`
+- lease/runtime ownership if needed later
 
-export type TurnMutation = {
-  appendMessages?: ChatMessage[];
-  runtimePatch?: Partial<SessionRuntimeRow>;
-  clearRuntime?: boolean;
-  terminalStatus?: "completed" | "aborted" | "error";
-};
+Then builds:
 
-export function reduceAgentEvent(
-  runtime: SessionRuntimeRow | undefined,
-  event: AgentEvent,
-): TurnMutation {
-  switch (event.type) {
-    case "message_start":
-    case "message_update": {
-      if (event.message.role !== "assistant") return { runtimePatch: { phase: "running" } };
-      return {
-        runtimePatch: {
-          phase: "running",
-          lastProgressAt: new Date().toISOString(),
-          streamMessage: event.message as AssistantMessage,
-        },
-      };
-    }
+- `displayMessages = transcript + projected runtime.streamMessage`
+- run linker once
+- return final model to UI
 
-    case "message_end": {
-      if (event.message.role === "user") {
-        return {
-          appendMessages: [event.message],
-          runtimePatch: { phase: "running", lastProgressAt: new Date().toISOString() },
-        };
-      }
-
-      if (event.message.role === "assistant") {
-        const pendingToolCallOwners = { ...(runtime?.pendingToolCallOwners ?? {}) };
-        for (const part of event.message.content) {
-          if (part.type === "toolCall") pendingToolCallOwners[part.id] = event.message.id;
-        }
-
-        return {
-          appendMessages: [event.message as AssistantMessage],
-          runtimePatch: {
-            phase: "running",
-            lastProgressAt: new Date().toISOString(),
-            streamMessage: undefined,
-            pendingToolCallOwners,
-          },
-        };
-      }
-
-      if (event.message.role === "toolResult") {
-        const assistantId = runtime?.pendingToolCallOwners?.[event.message.toolCallId];
-        if (!assistantId) {
-          return {
-            runtimePatch: {
-              phase: "running",
-              lastProgressAt: new Date().toISOString(),
-              lastError: `Dropped orphan tool result ${event.message.toolCallId}`,
-            },
-          };
-        }
-
-        const nextPending = { ...(runtime?.pendingToolCallOwners ?? {}) };
-        delete nextPending[event.message.toolCallId];
-
-        return {
-          appendMessages: [
-            { ...event.message, parentAssistantId: assistantId } as ToolResultMessage,
-          ],
-          runtimePatch: {
-            phase: "running",
-            lastProgressAt: new Date().toISOString(),
-            pendingToolCallOwners: nextPending,
-          },
-        };
-      }
-
-      return { runtimePatch: { phase: "running" } };
-    }
-
-    case "turn_end":
-      return { runtimePatch: { lastProgressAt: new Date().toISOString() } };
-
-    case "agent_end":
-      return {
-        clearRuntime: true,
-        terminalStatus: "completed",
-      };
-  }
-}
-```
-
-Important: exact code can differ. the invariant matters:
-
-- append completed messages on `message_end`
-- store partial assistant only in runtime row
-- never synthesize transcript rows from snapshots
-
----
-
-## 3.4 one view-model selector for chat UI
-
-Create:
-
-`packages/pi/src/sessions/session-view-model.ts`
+Shape:
 
 ```ts
-import { getSession, getSessionMessages, getSessionRuntime } from "@gitinspect/db/schema";
-import { linkToolResults } from "@gitinspect/pi/agent/tool-result-linker";
-import type { ChatMessage } from "@gitinspect/pi/types/chat";
-
 export interface SessionViewModel {
   session: SessionData;
   runtime?: SessionRuntimeRow;
@@ -753,579 +501,548 @@ export interface SessionViewModel {
   hasPartialAssistantText: boolean;
   isStreaming: boolean;
 }
-
-export async function loadSessionViewModel(
-  sessionId: string,
-): Promise<SessionViewModel | undefined> {
-  const [session, transcript, runtime] = await Promise.all([
-    getSession(sessionId),
-    getSessionMessages(sessionId),
-    getSessionRuntime(sessionId),
-  ]);
-
-  if (!session) return undefined;
-
-  const displayBase: ChatMessage[] = [...transcript];
-  if (runtime?.streamMessage) {
-    displayBase.push({ ...runtime.streamMessage, status: "streaming" } as ChatMessage);
-  }
-
-  const linked = linkToolResults(displayBase);
-
-  return {
-    session,
-    runtime,
-    displayMessages: linked.messages,
-    hasPartialAssistantText:
-      runtime?.streamMessage?.role === "assistant" &&
-      runtime.streamMessage.content.some(
-        (part) => part.type === "text" && part.text.trim().length > 0,
-      ),
-    isStreaming: runtime?.phase === "running",
-  };
-}
 ```
 
-UI change:
+## 5. core FSM shrinks
 
-- replace separate `loadSessionWithMessages()` + `getSessionRuntime()` livequeries with one `loadSessionViewModel()` livequery
-- derive banner/composer state from this selector
+Primary runtime truth:
 
-This removes cross-query tearing.
+- `idle`
+- `running`
+- `interrupted`
 
----
-
-## 3.5 smaller FSM
-
-Today UI derives from `sessionIsStreaming` + `runtimeStatus` + lease + local runner.
-
-`packages/pi/src/sessions/session-view-state.ts:47-79`
-
-```ts
-if (input.sessionIsStreaming) {
-  if (input.hasLocalRunner) return { kind: "running-local", ... };
-  if (input.leaseState.kind === "locked") return { kind: "running-remote", freshness: "live", ... };
-  if (input.leaseState.kind === "stale") return { kind: "running-remote", freshness: "stale", ... };
-  return { kind: "recovering", ... };
-}
-```
-
-Replace core input with:
-
-```ts
-export type ActiveSessionViewInput = {
-  hasLocalRunner: boolean;
-  hasPartialAssistantText: boolean;
-  lastProgressAt?: string;
-  leaseState: SessionLeaseState;
-  runtimePhase: "idle" | "running" | "interrupted";
-};
-```
-
-Then derive:
+Derived UI states still okay:
 
 - `running-local`
-- `running-remote live/stale`
+- `running-remote` live/stale
 - `recovering`
 - `interrupted`
 - `ready`
 
-from **runtime phase + lease + local runner** only.
+But derive them from:
 
-No need for both `session.isStreaming` and `runtime.status` as independent truth.
+- runtime `phase`
+- lease ownership
+- local runner presence
+
+not from `session.isStreaming` + `runtime.status` + memory all at once.
 
 ---
 
-## 4. implementation phases
+## event-sourced write rules. this is the heart of the plan
 
-## phase 1. fix read-path ownership first. stop old bad rows from poisoning UI/replay
+## rule table
 
-### goal
+### `message_start(assistant)` / `message_update(assistant)`
 
-Make all readers agree today. low risk. fast win.
-
-### steps
-
-1. Add `packages/pi/src/agent/tool-result-linker.ts`
-2. Switch these files to use it:
-   - `packages/pi/src/lib/chat-adapter.ts`
-   - `packages/pi/src/agent/message-transformer.ts`
-   - `packages/pi/src/lib/copy-session-markdown.ts`
-   - `packages/pi/src/lib/export-markdown.ts`
-3. Add one-time read repair in `loadSessionWithMessages()`:
+Write only runtime:
 
 ```ts
-export async function loadSessionWithMessages(id: string) {
-  const session = await loadSession(id);
-  if (!session) return undefined;
+await patchSessionRuntime(sessionId, {
+  phase: "running",
+  lastProgressAt: getIsoNow(),
+  ownerTabId: getCurrentTabId(),
+  streamMessage: assistantDraft,
+  turnId,
+});
+```
 
-  const messages = await getSessionMessages(id);
-  const linked = linkToolResults(messages);
+No transcript write.
 
-  if (linked.changed) {
-    await replaceSessionMessages(buildPersistedSession(session, linked.messages), linked.messages);
-  }
+### `message_end(user)`
 
-  return { session, messages: linked.messages };
+Append user row to transcript.
+Update runtime phase/progress.
+
+```ts
+await putMessage(toMessageRow(sessionId, userMessage, "completed", userMessage.id));
+await patchSessionRuntime(sessionId, {
+  phase: "running",
+  lastProgressAt: getIsoNow(),
+  ownerTabId: getCurrentTabId(),
+  turnId,
+});
+```
+
+### `message_end(assistant)`
+
+Append assistant row to transcript.
+Clear runtime partial.
+Register each tool call owner.
+
+```ts
+const pending = { ...(runtime.pendingToolCallOwners ?? {}) };
+for (const block of assistant.content) {
+  if (block.type === "toolCall") pending[block.id] = assistant.id;
 }
+
+await putMessage(toMessageRow(sessionId, assistant, "completed", assistant.id));
+await patchSessionRuntime(sessionId, {
+  phase: "running",
+  lastProgressAt: getIsoNow(),
+  ownerTabId: getCurrentTabId(),
+  turnId,
+  streamMessage: undefined,
+  pendingToolCallOwners: pending,
+});
 ```
 
-### payoff
+### `message_end(toolResult)`
 
-- historical bad rows self-heal
-- replay/UI/export all stop disagreeing
-- new linker becomes reusable foundation
-
-### note
-
-Phase 1 alone already fixes a large share of orphan pain.
-
----
-
-## phase 2. add runtime turn buffer fields. keep livequery
-
-### goal
-
-Stop using transcript rows for partial assistant state.
-
-### steps
-
-1. Extend `SessionRuntimeRow` in `packages/db/src/storage-types.ts`
-2. Update `packages/db/src/session-runtime.ts` helpers to read/write:
-   - `phase`
-   - `streamMessage`
-   - `pendingToolCallOwners`
-3. Keep old `status`/`assistantMessageId`/`turnId` fields during transition
-4. Do **not** change Dexie indexes yet. no version bump needed here.
-
-Suggested helper API:
+Look up owner from runtime `pendingToolCallOwners`.
+If found, append linked tool result.
+If not, drop as orphan and record runtime/system notice.
 
 ```ts
-export async function patchSessionRuntime(
-  sessionId: string,
-  patch: Partial<SessionRuntimeRow>,
-): Promise<SessionRuntimeRow> { ... }
+const assistantId = runtime.pendingToolCallOwners?.[toolResult.toolCallId];
+if (!assistantId) {
+  // orphan. drop from steady-state transcript.
+  await patchSessionRuntime(sessionId, {
+    phase: "running",
+    lastProgressAt: getIsoNow(),
+    lastError: `Dropped orphan tool result ${toolResult.toolCallId}`,
+  });
+  return;
+}
 
-export async function clearSessionRuntime(sessionId: string): Promise<void> { ... }
+const nextPending = { ...(runtime.pendingToolCallOwners ?? {}) };
+delete nextPending[toolResult.toolCallId];
+
+await putMessage(
+  toMessageRow(
+    sessionId,
+    { ...toolResult, parentAssistantId: assistantId },
+    "completed",
+    toolResult.id,
+  ),
+);
+await patchSessionRuntime(sessionId, {
+  phase: "running",
+  lastProgressAt: getIsoNow(),
+  pendingToolCallOwners: nextPending,
+});
 ```
 
----
+### `turn_end`
 
-## phase 3. replace snapshot-based persistence with event-driven append-only writes
+Normally no transcript reconstruction. maybe just progress stamp if needed.
 
-### goal
+### `agent_end` success
 
-Delete the complexity center.
-
-### steps
-
-1. Introduce `packages/pi/src/agent/turn-event-store.ts`
-2. Move all persistence decisions to `reduceAgentEvent(...)`
-3. Local host path:
-   - `packages/pi/src/agent/agent-host.ts`
-   - subscribe to `AgentEvent`
-   - persist append/runtime patch directly from reducer
-4. Worker path:
-   - stop sending `WorkerSnapshotEnvelope`
-   - send reduced turn mutations / runtime state
-5. Replace `AgentTurnPersistence` usages incrementally
-
-### target write behavior
-
-#### on `message_end(user)`
-
-- append user row to transcript
-- set runtime `phase = running`
-
-#### on `message_update(assistant)`
-
-- update `runtime.streamMessage`
-- update `lastProgressAt`
-
-#### on `message_end(assistant)`
-
-- append assistant row to transcript
-- clear `runtime.streamMessage`
-- register each `toolCall.id -> assistant.id` in runtime map
-
-#### on `message_end(toolResult)`
-
-- look up `runtime.pendingToolCallOwners[toolCallId]`
-- if found, append linked toolResult row to transcript
-- if not found, drop + emit system/runtime notice
-- remove consumed tool call from runtime map
-
-#### on `agent_end`
-
-- clear `streamMessage`
-- clear pending tool map
-- set phase `idle`
-- clear last error if completed
-
-#### on error/abort before final completion
-
-- set phase `interrupted`
-- keep `streamMessage` if partial assistant exists
-- keep `lastError`
-
-### what gets deleted after this phase
-
-- `rotateStreamingAssistantDraft`
-- `assignedAssistantIds`
-- `persistedMessageIds`
-- snapshot diff logic
-- transcript `status: "streaming"` writes
-
----
-
-## phase 4. move UI to one view-model livequery
-
-### goal
-
-No more mixed snapshots from 2 Dexie queries + in-memory truth.
-
-### steps
-
-1. Add `packages/pi/src/sessions/session-view-model.ts`
-2. Update `packages/ui/src/components/chat.tsx`
-3. Replace:
-   - `loadSessionWithMessages()` livequery
-   - `getSessionRuntime()` livequery
-4. Use one livequery:
+Clear runtime. set phase idle.
 
 ```ts
-const sessionView = useLiveQuery(
-  async () => (props.sessionId ? await loadSessionViewModel(props.sessionId) : undefined),
-  [props.sessionId],
+await patchSessionRuntime(sessionId, {
+  phase: "idle",
+  lastProgressAt: getIsoNow(),
+  lastError: undefined,
+  streamMessage: undefined,
+  pendingToolCallOwners: {},
+});
+```
+
+### abort / provider error / watchdog / crash before clean end
+
+Do **not** rewrite transcript as core behavior.
+Set runtime interrupted. keep partial assistant if any.
+
+```ts
+await patchSessionRuntime(sessionId, {
+  phase: "interrupted",
+  lastProgressAt: getIsoNow(),
+  lastError: error.message,
+  streamMessage: currentDraft ?? runtime.streamMessage,
+});
+```
+
+This is enough for current resume semantics too.
+
+Note:
+
+- current "continue" is really a follow-up prompt, not upstream `agent.continue()`.
+- evidence: `packages/pi/src/agent/runtime-client.ts:374-380`
+
+```ts
+await this.startTurn(
+  sessionId,
+  mode === "continue" ? CONTINUE_INTERRUPTED_PROMPT : RETRY_INTERRUPTED_PROMPT,
 );
 ```
 
-5. Derive:
-   - `messages`
-   - `hasPartialAssistantText`
-   - `isStreaming`
-   - banner/composer state
-
-from `sessionView`
-
-### payoff
-
-- livequery UX preserved
-- fewer transient mismatches
-- component simpler
+So keeping interrupted partial assistant in runtime is compatible with current UX.
 
 ---
 
-## phase 5. collapse the FSM
+## legacy repair-on-read. migration only. not core runtime
 
-### goal
+Historical bad rows already exist.
+Need one-time sanitation when loading old sessions.
 
-Core state machine small. view state derived.
+Current raw load path:
+`packages/pi/src/sessions/session-service.ts:94-104`
 
-### new runtime phase transitions
-
-```text
-idle
-  -> running      on startTurn / first message_start
-running
-  -> idle         on agent_end success
-running
-  -> interrupted  on crash / watchdog / abort / provider error before clean end
-interrupted
-  -> running      on continue / retry
-interrupted
-  -> idle         on explicit discard / successful repair cleanup
+```ts
+export async function loadSessionWithMessages(id: string) {
+  ...
+  return {
+    messages: await getSessionMessages(id),
+    session,
+  };
+}
 ```
 
-### file changes
+Change this to:
 
-- `packages/pi/src/sessions/session-view-state.ts`
-- `packages/pi/src/agent/runtime-client.ts`
-- `packages/pi/src/sessions/session-notices.ts`
+```ts
+const messages = await getSessionMessages(id);
+const linked = linkToolResults(messages);
 
-### compatibility rule
+if (linked.changed) {
+  await replaceSessionMessages(buildPersistedSession(session, linked.messages), linked.messages);
+}
 
-Until cleanup is complete:
+return {
+  session,
+  messages: linked.messages,
+};
+```
 
-- runtime `phase` is source of truth
-- `session.isStreaming` is compat only. write it from runtime phase when needed.
+Important:
 
----
-
-## phase 6. cleanup old legacy fields + helpers
-
-### after all callers moved
-
-Remove / deprecate:
-
-- `SessionData.isStreaming` as source of truth
-- `MessageRow.status = "streaming"`
-- `parentAssistantId` as trusted source of truth
-- `pruneOrphanToolResults()` bespoke logic
-- `rotateStreamingAssistantDraft()`
-- `WorkerSnapshotEnvelope`
-- snapshot repair heavy paths
-
-### optional later DB cleanup
-
-If we want to remove indexes on `sessions.isStreaming` or `messages.status`, then do a real Dexie version bump later. Not needed for first durable fix.
+- keep this during migration
+- once old transcripts are clean, this is just a safety net
+- it is **not** the new core correctness mechanism
 
 ---
 
-## 5. file-by-file plan
+## exact file changes
 
 ## new files
 
 ### `packages/pi/src/agent/tool-result-linker.ts`
 
-- single ownership/linking law
-- used by UI, replay, export, repair
+Single ownership law.
 
 ### `packages/pi/src/agent/turn-event-store.ts`
 
-- reducer + persistence helpers for exact `AgentEvent`s
+Event reducer / write helpers for local + worker paths.
 
 ### `packages/pi/src/sessions/session-view-model.ts`
 
-- one livequery-facing selector for transcript + runtime + derived flags
+One selector for transcript + runtime + linked display model.
 
-## files to rewrite heavily
+## rewrite heavily
 
 ### `packages/pi/src/agent/agent-turn-persistence.ts`
 
-Plan: replace entirely. if easier, keep filename but rewrite internals around event reducer. preferred: new file + delete old class after migration.
+Target: delete or hollow out entirely.
+
+Reason:
+
+- this is the snapshot reconstruction center
+- event-sourced write path should replace it
 
 ### `packages/pi/src/agent/runtime-worker.ts`
 
-- stop building whole snapshots for persistence
-- emit reduced runtime updates / committed messages
+Stop emitting snapshot envelopes as persistence primitive.
+Emit reduced event-derived mutations or call shared turn-event-store logic.
 
 ### `packages/pi/src/agent/worker-backed-agent-host.ts`
 
-- apply reduced turn updates
-- stop calling `applySnapshot(...)`
-- stop handling `rotateStreamingAssistantDraft`
+Stop `applySnapshot(...)` + `rotateStreamingAssistantDraft` path.
+Apply event-derived mutations.
 
 ### `packages/pi/src/agent/agent-host.ts`
 
-- local host uses same reducer/store as worker-backed path
+Local runtime should use same event-derived write rules as worker path.
 
-## files to update moderately
+## update moderately
 
 ### `packages/db/src/storage-types.ts`
 
-- add runtime phase + runtime fields
-- keep compat fields for now
+Add:
+
+- `RuntimePhase`
+- `streamMessage`
+- `pendingToolCallOwners`
+
+Keep compat fields for now.
 
 ### `packages/db/src/session-runtime.ts`
 
-- patch/clear helpers
-- runtime phase becomes primary state
-
-### `packages/pi/src/lib/chat-adapter.ts`
-
-- use linker output, not raw `parentAssistantId`
-
-### `packages/pi/src/agent/message-transformer.ts`
-
-- replace orphan pruning + reorder logic with linker-backed canonicalization
-- only emit `function_call_output` for linked tool results
+Replace `markTurnStarted/Progress/Completed/...` shape with generic patch/update helpers around runtime phase.
 
 ### `packages/pi/src/sessions/session-service.ts`
 
-- read repair for old bad transcripts
-- later maybe delegate to session view-model
+Add legacy repair-on-read.
 
-### `packages/pi/src/sessions/session-view-state.ts`
+### `packages/pi/src/lib/chat-adapter.ts`
 
-- switch to runtime phase input
+Consume linker output, not raw `parentAssistantId`.
 
-### `packages/ui/src/components/chat.tsx`
+### `packages/pi/src/agent/message-transformer.ts`
 
-- use session view-model livequery
+Use linker-backed canonicalization. no bespoke orphan pruning law.
 
 ### `packages/pi/src/lib/copy-session-markdown.ts`
 
 ### `packages/pi/src/lib/export-markdown.ts`
 
-- use linker-backed tool execution view
+Use linker output.
+
+### `packages/pi/src/sessions/session-view-state.ts`
+
+Switch to runtime `phase` as primary input.
+
+### `packages/ui/src/components/chat.tsx`
+
+Replace multiple livequeries with one `loadSessionViewModel()` livequery.
+
+### `packages/pi/src/agent/runtime-client.ts`
+
+Load state from session view-model/runtime phase. keep current continue/retry semantics.
+
+### `packages/pi/src/sessions/session-notices.ts`
+
+Stop interruption repair from being transcript-rewrite-first. use runtime `phase = interrupted` as primary steady-state behavior.
 
 ---
 
-## 6. migration + compatibility strategy
+## no UX regression plan
 
-## stage A. stop new bugs
+## projection strategy
 
-- link on read
-- append canonical tool results only
-- stop trusting stored `parentAssistantId`
+Keep existing UI component contract by projecting runtime draft into a synthetic streaming assistant row:
 
-## stage B. stop new streaming junk in transcript
+```ts
+const displayMessages: ChatMessage[] = [...transcript];
+if (runtime?.streamMessage?.role === "assistant") {
+  displayMessages.push({
+    ...runtime.streamMessage,
+    status: "streaming",
+  } as ChatMessage);
+}
+```
 
-- runtime holds partial assistant
-- transcript only gets completed `message_end` rows
+That preserves:
 
-## stage C. self-heal old sessions
+- `ChatMessage` streaming placeholder behavior
+- `Chat` panel streaming state
+- reasoning streaming marker on last assistant
 
-On session load:
+## low-latency writes
 
-1. load transcript
-2. run linker
-3. if changed, rewrite transcript with `replaceSessionMessages(...)`
-4. continue normally
+Keep fast runtime writes:
 
-This lets old broken sessions heal lazily. no separate migration job needed.
+- partial assistant updates go to `session_runtime`
+- completed rows append on `message_end`
+- no batching that would make tool-result boundaries slower than today
+
+Current runtime already flushes at high frequency:
+`packages/pi/src/agent/runtime-worker.ts:233-258`
+
+```ts
+const force =
+  event.type === "message_end" ||
+  event.type === "turn_end" ||
+  (!snapshot.isStreaming && this.latestTerminalStatus !== undefined);
+```
+
+Event-sourced version should preserve at least this immediacy.
+
+## remote mirror / ownership UX
+
+Current banners depend on lease + runtime progress, not transcript reconstruction:
+`packages/ui/src/components/chat.tsx:561-569`
+
+```ts
+Read-only mirror. This session is active in another tab.
+...
+Read-only mirror. Another tab still owns this streaming session.
+```
+
+So keeping `lastProgressAt`, `ownerTabId`, `phase` in runtime row is enough.
 
 ---
 
-## 7. tests. must be exhaustive here
+## migration order. still staged, but destination is full event-sourcing
 
-## new tests
+## stage 1. introduce linker + repair-on-read
+
+- add `tool-result-linker.ts`
+- switch UI/replay/export to it
+- sanitize old rows on load
+
+## stage 2. extend runtime row
+
+- add `phase`, `streamMessage`, `pendingToolCallOwners`
+- keep compat fields mirrored
+
+## stage 3. build event store
+
+- add `turn-event-store.ts`
+- define exact per-event writes
+- write unit tests first
+
+## stage 4. migrate local host
+
+- `agent-host.ts` writes via event store
+- no snapshot reconstruction for local path
+
+## stage 5. migrate worker path
+
+- `runtime-worker.ts` + `worker-backed-agent-host.ts` move to event store
+- delete `rotateStreamingAssistantDraft`
+- kill snapshot envelope dependence for persistence
+
+## stage 6. unify UI on one selector
+
+- `session-view-model.ts`
+- `chat.tsx` consumes one livequery
+
+## stage 7. simplify FSM + recovery
+
+- runtime `phase` drives state
+- transcript repair no longer steady-state recovery path
+- interrupted turns use runtime row, then explicit continue/retry prompt
+
+## stage 8. remove legacy fields
+
+- delete transcript `streaming` writes
+- delete `session.isStreaming` as truth source
+- delete obsolete snapshot/diff helpers
+
+---
+
+## tests. these are mandatory
+
+## preserve existing UX tests
+
+Read before edits:
+
+- `tests/chat-message.test.tsx`
+- `tests/chat-state.test.tsx`
+- `tests/runtime-worker.test.ts`
+- `tests/agent-host-persistence.test.ts`
+- `tests/message-transformer.test.ts`
+- `tests/session-notices.test.ts`
+- `tests/chat-adapter.test.ts`
+- `tests/copy-session-markdown.test.ts`
+
+## add new tests
 
 ### `tests/tool-result-linker.test.ts`
 
-Cases:
+Cover:
 
-1. links tool result to owning assistant by `toolCallId`
-2. rewrites wrong `parentAssistantId`
-3. drops orphan tool result with no matching tool call
-4. handles multiple tool calls in one assistant message
-5. handles repeated tool-call ids across turns safely
-6. preserves standalone assistant/user/system rows
-
-Example:
-
-```ts
-it("links multiple tool results to one assistant", () => {
-  const assistant = assistantMessage([
-    { type: "toolCall", id: "call-1", name: "read", arguments: { path: "a" } },
-    { type: "toolCall", id: "call-2", name: "bash", arguments: { command: "pwd" } },
-  ]);
-
-  const linked = linkToolResults([
-    assistant,
-    toolResult({ toolCallId: "call-1", parentAssistantId: "" }),
-    toolResult({ toolCallId: "call-2", parentAssistantId: "wrong" }),
-  ]);
-
-  expect(linked.messages).toEqual([
-    assistant,
-    expect.objectContaining({ toolCallId: "call-1", parentAssistantId: assistant.id }),
-    expect.objectContaining({ toolCallId: "call-2", parentAssistantId: assistant.id }),
-  ]);
-});
-```
-
-### `tests/session-view-model.test.ts`
-
-Cases:
-
-1. returns transcript + runtime partial assistant merged for display
-2. derives `hasPartialAssistantText` from runtime `streamMessage`
-3. uses linker so standalone orphan tool result is hidden/dropped
-4. shows streaming assistant from runtime even though transcript has only completed rows
+- rewrites wrong `parentAssistantId`
+- drops orphan tool result
+- handles multi-tool assistant
+- handles repeated turns safely
 
 ### `tests/turn-event-store.test.ts`
 
-Cases:
+Cover:
 
-1. `message_end(user)` appends transcript row
-2. `message_update(assistant)` only updates runtime stream message
-3. `message_end(assistant with tool calls)` appends transcript + registers pending tool owners
-4. `message_end(toolResult)` appends linked tool result + consumes pending owner
-5. orphan tool result gets dropped
-6. `agent_end` clears runtime
-7. error/abort moves runtime to interrupted and keeps partial assistant
+- `message_update(assistant)` updates runtime only
+- `message_end(user)` appends transcript row
+- `message_end(assistant)` appends transcript + registers tool owners
+- `message_end(toolResult)` appends linked row / drops orphan
+- `agent_end` clears runtime to idle
+- abort/error sets phase interrupted and preserves partial assistant
 
-## update existing tests
+### `tests/session-view-model.test.ts`
 
-### `tests/agent-host-persistence.test.ts`
+Cover:
 
-Replace snapshot/diff expectations with:
+- transcript + runtime.streamMessage projection
+- linker applied once in selector
+- streaming placeholder still appears
+- tool executions fold correctly
 
-- no transcript row with `status: "streaming"`
-- completed assistant/toolResult rows appended immediately
-- runtime row contains partial assistant during streaming
-- no orphan rows after successful tool turn
+## update existing assertions
 
-### `tests/message-transformer.test.ts`
+### replace
 
-- replay input built from linker-backed canonical transcript
-- never emits orphan `function_call_output`
-- preserves valid multi-tool outputs
+- expectations that transcript stores `status: "streaming"`
+- expectations around `rotateStreamingAssistantDraft`
+- expectations around snapshot-based repair being the normal path
 
-### `tests/session-notices.test.ts`
+### add
 
-- interruption repair uses runtime phase + linker
-- transcript repair does not rewrite valid canonical rows unnecessarily
-
-### `tests/chat-adapter.test.ts`
-
-- derive assistant view from linker output, not raw `parentAssistantId`
-
-### `tests/runtime-worker.test.ts`
-
-- worker emits reduced runtime updates / committed messages
-- no `rotateStreamingAssistantDraft` expectation anymore
+- runtime row carries partial assistant during stream
+- transcript only changes on `message_end`
+- interrupted state keeps partial assistant in runtime, not transcript
+- no orphan `function_call_output`
 
 ---
 
-## 8. done criteria
+## files an agent must read before implementation
 
-Refactor is done when all are true:
+## mandatory
 
-- no code path writes `status: "streaming"` message rows
-- `session_runtime` stores partial assistant state
-- UI live streaming still works via Dexie livequery
-- all readers use one linker
-- historical orphan rows self-heal on load
-- `rotateStreamingAssistantDraft` deleted
-- `assignedAssistantIds` / `persistedMessageIds` deleted
-- replay, UI, export, repair all agree on tool ownership
+1. `plan.md`
+2. `packages/ui/src/components/chat.tsx`
+3. `packages/ui/src/components/chat-message.tsx`
+4. `packages/pi/src/sessions/session-service.ts`
+5. `packages/db/src/storage-types.ts`
+6. `packages/db/src/session-runtime.ts`
+7. `packages/db/src/schema.ts`
+8. `packages/pi/src/agent/session-adapter.ts`
+9. `packages/pi/src/lib/chat-adapter.ts`
+10. `packages/pi/src/agent/message-transformer.ts`
+11. `packages/pi/src/agent/agent-turn-persistence.ts`
+12. `packages/pi/src/agent/agent-host.ts`
+13. `packages/pi/src/agent/runtime-worker-types.ts`
+14. `packages/pi/src/agent/runtime-worker.ts`
+15. `packages/pi/src/agent/worker-backed-agent-host.ts`
+16. `packages/pi/src/agent/runtime-client.ts`
+17. `packages/pi/src/sessions/session-view-state.ts`
+18. `packages/pi/src/sessions/session-notices.ts`
+19. `node_modules/@mariozechner/pi-agent-core/dist/agent-loop.js`
+20. `node_modules/@mariozechner/pi-agent-core/dist/agent.js`
+
+## tests
+
+21. `tests/chat-message.test.tsx`
+22. `tests/chat-state.test.tsx`
+23. `tests/runtime-worker.test.ts`
+24. `tests/agent-host-persistence.test.ts`
+25. `tests/message-transformer.test.ts`
+26. `tests/session-notices.test.ts`
+27. `tests/chat-adapter.test.ts`
+28. `tests/copy-session-markdown.test.ts`
+
+---
+
+## done criteria
+
+Refactor is done only when all are true:
+
+- no steady-state code path writes transcript rows with `status: "streaming"`
+- runtime row owns all partial assistant state
+- UI still streams via Dexie livequery
+- streaming placeholder tests still pass
+- tool-result boundaries appear immediately enough to satisfy existing UX tests
+- one linker is used by UI + replay + export + legacy repair
+- local host and worker host use event-derived writes, not snapshot reconstruction
+- `rotateStreamingAssistantDraft` removed
+- `AgentTurnPersistence` reconstruction center removed or reduced to a thin compat adapter pending deletion
+- interrupted turns rely on runtime `phase`, not transcript rewrite as primary mechanism
+- historical bad rows self-heal on read
+- replay emits no orphan `function_call_output`
 - multi-tool turns pass
-- future parallel tool execution would not require changing ownership logic
 
 ---
 
-## 9. practical recommendation on execution order
+## short summary
 
-Implement in this exact order:
+We are choosing the simpler architecture fully:
 
-1. linker + read repair
-2. view-model selector
-3. runtime row fields
-4. event reducer/store
-5. local host migration
-6. worker path migration
-7. FSM cleanup
-8. legacy field cleanup
+- transcript = completed history
+- runtime = active turn buffer
+- writes driven by exact agent events
+- one linker for tool ownership
+- one selector for UI
 
-Why this order:
-
-- early phases fix user-visible orphan bugs fast
-- later phases remove complexity without breaking livequery UX
-- each phase leaves repo in a shippable state
-
----
-
-## 10. non-goal for this plan
-
-Do **not** bundle true parallel tool execution in same refactor.
-
-But design above supports it because ownership is keyed by `toolCallId`, not sequential position. Upstream already guarantees toolResult messages carry `toolCallId` and tool results are emitted after assistant message_end.
-
----
-
-## 11. short version
-
-The durable fix is not “better repair”.
-
-It is:
-
-- canonical transcript = completed rows only
-- runtime row = partial assistant only
-- one linker = one ownership law
-- one livequery selector = one display model
-- event-driven append = no snapshot reconstruction
-
-That kills the orphan class at the architecture level.
+This removes the need for snapshot diffing, transcript reconstruction, and patchy ownership repair logic.
