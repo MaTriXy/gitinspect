@@ -2,7 +2,7 @@
   "name": "@gitinspect/cli",
   "version": "0.1.1",
   "bin": {
-    "gitinspect": "./dist/index.js"
+    "gitinspect": "dist/index.js"
   },
   "files": [
     "dist",

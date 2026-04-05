@@ -29,6 +29,9 @@
     "dev:web": "turbo -F web dev",
     "dev:cli": "turbo -F @gitinspect/cli dev",
     "check": "oxlint && oxfmt --write",
+    "changeset": "changeset",
+    "version-packages": "changeset version",
+    "release": "changeset publish",
     "prepare": "husky",
     "test": "vitest run"
   },
@@ -38,6 +41,7 @@
     "zod": "catalog:"
   },
   "devDependencies": {
+    "@changesets/cli": "^2.30.0",
     "@gitinspect/config": "workspace:*",
     "@types/node": "catalog:",
     "fake-indexeddb": "^6.2.5",
