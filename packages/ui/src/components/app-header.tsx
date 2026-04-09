@@ -1,6 +1,6 @@
 import * as React from "react";
 import { Link, useNavigate, useRouterState } from "@tanstack/react-router";
-import type { ResolvedRepoSource } from "@gitinspect/db/storage-types";
+import type { ResolvedRepoSource } from "@gitinspect/db";
 import { useSelectedSessionSummary } from "@gitinspect/pi/hooks/use-selected-session-summary";
 import { githubOwnerAvatarUrl } from "@gitinspect/pi/repo/url";
 import {
@@ -231,6 +231,16 @@ export function AppHeader({ showGetPro = true }: { showGetPro?: boolean } = {}) 
           </>
         ) : null}
         <Separator className="!h-6 !self-center" orientation="vertical" />
+        <GitHubLink />
+        <Separator className="!h-6 !self-center" orientation="vertical" />
+        <HeaderTooltip label="Open X">
+          <Button asChild className="h-8 shadow-none" size="sm" variant="ghost">
+            <a href="https://x.com/dinnaiii" rel="noreferrer" target="_blank">
+              <Icons.x className="text-foreground" />
+            </a>
+          </Button>
+        </HeaderTooltip>
+        <Separator className="!h-6 !self-center" orientation="vertical" />
         <HeaderTooltip label="Send feedback">
           <Button
             className="h-8 gap-1.5 shadow-none"
@@ -240,6 +250,9 @@ export function AppHeader({ showGetPro = true }: { showGetPro?: boolean } = {}) 
                 search: (prev) => ({
                   ...prev,
                   feedback: "open",
+                  feedbackIncludeDiagnostics: undefined,
+                  feedbackMessage: undefined,
+                  feedbackSentiment: undefined,
                 }),
                 to: ".",
               });
@@ -252,17 +265,7 @@ export function AppHeader({ showGetPro = true }: { showGetPro?: boolean } = {}) 
           </Button>
         </HeaderTooltip>
         <Separator className="!h-6 !self-center" orientation="vertical" />
-        <HeaderTooltip label="Open X">
-          <Button asChild className="h-8 shadow-none" size="sm" variant="ghost">
-            <a href="https://x.com/dinnaiii" rel="noreferrer" target="_blank">
-              <Icons.x className="text-foreground" />
-            </a>
-          </Button>
-        </HeaderTooltip>
-        <Separator className="!h-6 !self-center" orientation="vertical" />
         <AuthStatusChip />
-        <Separator className="!h-6 !self-center" orientation="vertical" />
-        <GitHubLink />
         <Separator className="!h-6 !self-center" orientation="vertical" />
         <ThemeToggle />
         <Separator className="!h-6 !self-center" orientation="vertical" />

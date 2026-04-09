@@ -2,10 +2,14 @@ import * as React from "react";
 import { useNavigate, useRouterState, useSearch } from "@tanstack/react-router";
 import { useTheme } from "next-themes";
 import { toast } from "sonner";
-import type { ResolvedRepoSource, SessionData } from "@gitinspect/db/storage-types";
+import type { ResolvedRepoSource, SessionData } from "@gitinspect/db";
 import { useSelectedSessionSummary } from "@gitinspect/pi/hooks/use-selected-session-summary";
 import { parseRepoRoutePath } from "@gitinspect/pi/repo/path-parser";
-import { type FeedbackPayload, type FeedbackSentiment } from "@gitinspect/shared/feedback";
+import {
+  type FeedbackPayload,
+  type FeedbackSentiment,
+  parseFeedbackSentiment,
+} from "@gitinspect/shared/feedback";
 import { Button } from "@gitinspect/ui/components/button";
 import { Checkbox } from "@gitinspect/ui/components/checkbox";
 import {
@@ -165,10 +169,24 @@ async function submitFeedback(payload: FeedbackPayload): Promise<FeedbackRespons
   return candidate as FeedbackResponse;
 }
 
-function useFeedbackOpenState() {
+function useFeedbackDialogState() {
   const navigate = useNavigate();
   const search = useSearch({ strict: false });
   const open = search.feedback === "open";
+  const message = typeof search.feedbackMessage === "string" ? search.feedbackMessage : "";
+  const sentiment = parseFeedbackSentiment(search.feedbackSentiment) ?? null;
+  const includeDiagnostics = search.feedbackIncludeDiagnostics === true;
+
+  const updateSearch = React.useCallback(
+    (updater: (prev: Record<string, unknown>) => Record<string, unknown>) => {
+      void navigate({
+        replace: true,
+        search: (prev) => updater(prev as Record<string, unknown>),
+        to: ".",
+      });
+    },
+    [navigate],
+  );
 
   const setOpen = React.useCallback(
     (nextOpen: boolean) => {
@@ -176,13 +194,13 @@ function useFeedbackOpenState() {
         return;
       }
 
-      void navigate({
-        search: (prev) => ({
-          ...prev,
-          feedback: nextOpen ? "open" : undefined,
-        }),
-        to: ".",
-      });
+      updateSearch((prev) => ({
+        ...prev,
+        feedback: nextOpen ? "open" : undefined,
+        feedbackIncludeDiagnostics: nextOpen ? prev.feedbackIncludeDiagnostics : undefined,
+        feedbackMessage: nextOpen ? prev.feedbackMessage : undefined,
+        feedbackSentiment: nextOpen ? prev.feedbackSentiment : undefined,
+      }));
 
       if (!nextOpen) {
         requestAnimationFrame(() => {
@@ -190,10 +208,63 @@ function useFeedbackOpenState() {
         });
       }
     },
-    [navigate, open],
+    [open, updateSearch],
   );
 
-  return { open, setOpen };
+  const setMessage = React.useCallback(
+    (nextMessage: string) => {
+      updateSearch((prev) => ({
+        ...prev,
+        feedback: "open",
+        feedbackMessage: nextMessage.length > 0 ? nextMessage : undefined,
+      }));
+    },
+    [updateSearch],
+  );
+
+  const setSentiment = React.useCallback(
+    (nextSentiment: FeedbackSentiment | null) => {
+      updateSearch((prev) => ({
+        ...prev,
+        feedback: "open",
+        feedbackSentiment: nextSentiment ?? undefined,
+      }));
+    },
+    [updateSearch],
+  );
+
+  const setIncludeDiagnostics = React.useCallback(
+    (nextIncludeDiagnostics: boolean) => {
+      updateSearch((prev) => ({
+        ...prev,
+        feedback: "open",
+        feedbackIncludeDiagnostics: nextIncludeDiagnostics ? true : undefined,
+      }));
+    },
+    [updateSearch],
+  );
+
+  const reset = React.useCallback(() => {
+    updateSearch((prev) => ({
+      ...prev,
+      feedback: undefined,
+      feedbackIncludeDiagnostics: undefined,
+      feedbackMessage: undefined,
+      feedbackSentiment: undefined,
+    }));
+  }, [updateSearch]);
+
+  return {
+    includeDiagnostics,
+    message,
+    open,
+    reset,
+    sentiment,
+    setIncludeDiagnostics,
+    setMessage,
+    setOpen,
+    setSentiment,
+  };
 }
 
 function SentimentButton(props: {
@@ -232,9 +303,9 @@ function FeedbackForm(props: {
   onSubmit: (event: React.FormEvent<HTMLFormElement>) => void;
   sentiment: FeedbackSentiment | null;
   setErrors: React.Dispatch<React.SetStateAction<FeedbackErrors>>;
-  setIncludeDiagnostics: React.Dispatch<React.SetStateAction<boolean>>;
-  setMessage: React.Dispatch<React.SetStateAction<string>>;
-  setSentiment: React.Dispatch<React.SetStateAction<FeedbackSentiment | null>>;
+  setIncludeDiagnostics: (value: boolean) => void;
+  setMessage: (value: string) => void;
+  setSentiment: (value: FeedbackSentiment | null) => void;
   setWebsite: React.Dispatch<React.SetStateAction<string>>;
   website: string;
 }) {
@@ -245,12 +316,20 @@ function FeedbackForm(props: {
           <Textarea
             aria-invalid={props.errors.message ? true : undefined}
             aria-label="Feedback"
-            autoFocus
+            autoFocus={props.message.length === 0}
             id="feedback-message"
             maxLength={2_000}
             onChange={(event) => {
               props.setMessage(event.currentTarget.value);
               props.setErrors((current) => ({ ...current, message: undefined }));
+            }}
+            onKeyDown={(event) => {
+              if (event.key !== "Enter" || event.shiftKey || event.nativeEvent.isComposing) {
+                return;
+              }
+
+              event.preventDefault();
+              event.currentTarget.form?.requestSubmit();
             }}
             placeholder="Tell us what went well, what felt confusing, or what broke."
             rows={6}
@@ -397,16 +476,23 @@ function FeedbackFormShell(props: {
 
 export function FeedbackDialog() {
   const { resolvedTheme, theme } = useTheme();
-  const { open, setOpen } = useFeedbackOpenState();
+  const {
+    includeDiagnostics,
+    message,
+    open,
+    reset,
+    sentiment,
+    setIncludeDiagnostics,
+    setMessage,
+    setOpen,
+    setSentiment,
+  } = useFeedbackDialogState();
   const currentMatch = useRouterState({
     select: (state) => state.matches[state.matches.length - 1],
   }) as RouteMatchLike;
   const sessionId =
     currentMatch.routeId === "/chat/$sessionId" ? currentMatch.params.sessionId : undefined;
   const session = useSelectedSessionSummary(sessionId);
-  const [sentiment, setSentiment] = React.useState<FeedbackSentiment | null>(null);
-  const [message, setMessage] = React.useState("");
-  const [includeDiagnostics, setIncludeDiagnostics] = React.useState(false);
   const [website, setWebsite] = React.useState("");
   const [errors, setErrors] = React.useState<FeedbackErrors>({});
   const [isSubmitting, setIsSubmitting] = React.useState(false);
@@ -464,12 +550,9 @@ export function FeedbackDialog() {
             },
           },
         });
-        setMessage("");
-        setSentiment(null);
-        setIncludeDiagnostics(false);
         setWebsite("");
         setErrors({});
-        setOpen(false);
+        reset();
       } catch {
         toast.error("Could not send feedback right now");
       } finally {
@@ -483,9 +566,9 @@ export function FeedbackDialog() {
       resolvedTheme,
       sentiment,
       session,
-      setOpen,
       theme,
       website,
+      reset,
     ],
   );
 

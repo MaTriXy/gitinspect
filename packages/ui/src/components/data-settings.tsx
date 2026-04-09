@@ -5,9 +5,11 @@ import { useNavigate, useRouterState, useSearch } from "@tanstack/react-router";
 import { toast } from "sonner";
 import { Download, Trash2 } from "lucide-react";
 import { runtimeClient } from "@gitinspect/pi/agent/runtime-client";
-import { deleteAllLocalData, exportAllChatData } from "@gitinspect/db/schema";
+import { deleteAllLocalData, exportAllChatData } from "@gitinspect/db";
 import { useGitHubAuthContext } from "@gitinspect/ui/components/github-auth-context";
 import { Button } from "@gitinspect/ui/components/button";
+import { Switch } from "@gitinspect/ui/components/switch";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@gitinspect/ui/components/tooltip";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -39,7 +41,7 @@ function downloadJson(filename: string, data: unknown) {
   URL.revokeObjectURL(url);
 }
 
-export function DataSettings() {
+export function DataSettings(props: { canRequestSync?: boolean; onRequestSync?: () => void }) {
   const navigate = useNavigate();
   const currentMatch = useRouterState({
     select: (state) => state.matches[state.matches.length - 1],
@@ -120,6 +122,38 @@ export function DataSettings() {
 
   return (
     <div className="space-y-4">
+      <Item variant="outline">
+        <ItemContent>
+          <ItemTitle>Enable sync</ItemTitle>
+          <ItemDescription>
+            Keep your chats and settings in sync across devices so you can pick up where you left
+            off from another browser or machine.
+          </ItemDescription>
+        </ItemContent>
+        <ItemActions>
+          {props.canRequestSync ? (
+            <Switch
+              aria-label="Enable sync"
+              checked={false}
+              onCheckedChange={(checked) => {
+                if (checked) {
+                  props.onRequestSync?.();
+                }
+              }}
+            />
+          ) : (
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <span className="inline-flex">
+                  <Switch aria-label="Enable sync" checked={false} disabled />
+                </span>
+              </TooltipTrigger>
+              <TooltipContent>Sync is available on Pro.</TooltipContent>
+            </Tooltip>
+          )}
+        </ItemActions>
+      </Item>
+
       <Item variant="outline">
         <ItemContent>
           <ItemTitle>Export chat as JSON</ItemTitle>

@@ -78,6 +78,7 @@ const BASE_SETTINGS_SECTIONS: Array<SettingsSectionItem> = [
 ];
 
 export function AppSettingsDialog(props: {
+  dataPanel?: React.ReactNode;
   pricingLabel?: string;
   pricingPanel?: React.ReactNode;
 }) {
@@ -239,7 +240,7 @@ export function AppSettingsDialog(props: {
                 {section === "proxy" ? <ProxySettings /> : null}
                 {section === "costs" ? <CostsPanel session={session} /> : null}
                 {section === "pricing" ? (props.pricingPanel ?? null) : null}
-                {section === "data" ? <DataSettings /> : null}
+                {section === "data" ? (props.dataPanel ?? <DataSettings />) : null}
                 {section === "about" ? <AboutPanel /> : null}
               </div>
             </div>

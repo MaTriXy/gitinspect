@@ -43,6 +43,9 @@ export function ChatFooter({ showGetPro = true }: { showGetPro?: boolean } = {})
             search: (prev) => ({
               ...prev,
               feedback: "open",
+              feedbackIncludeDiagnostics: undefined,
+              feedbackMessage: undefined,
+              feedbackSentiment: undefined,
             }),
             to: ".",
           });

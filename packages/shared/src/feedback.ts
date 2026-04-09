@@ -39,6 +39,14 @@ export type FeedbackPayload = z.infer<typeof feedbackSchema>;
 export type FeedbackDiagnostics = z.infer<typeof feedbackDiagnosticsSchema>;
 export type FeedbackSentiment = z.infer<typeof feedbackSentimentSchema>;
 
+export function isFeedbackSentiment(value: string): value is FeedbackSentiment {
+  return value === "happy" || value === "neutral" || value === "sad";
+}
+
+export function parseFeedbackSentiment(value: unknown): FeedbackSentiment | undefined {
+  return typeof value === "string" && isFeedbackSentiment(value) ? value : undefined;
+}
+
 export function normalizeFeedbackPayload(payload: FeedbackPayload): FeedbackPayload {
   if (!payload.includeDiagnostics) {
     return {

@@ -1,5 +1,7 @@
 import * as React from "react";
+import { configureDbCloud, syncDb } from "@gitinspect/db";
 import { env } from "@gitinspect/env/web";
+import { type FeedbackSentiment, parseFeedbackSentiment } from "@gitinspect/shared/feedback";
 import {
   HeadContent,
   Link,
@@ -11,38 +13,54 @@ import {
 } from "@tanstack/react-router";
 import { Analytics as VercelAnalytics } from "@vercel/analytics/react";
 import { Analytics as OneDollarStats } from "@/components/analytics";
-import appCss from "../styles.css?url";
-import { AppSettingsDialog } from "@gitinspect/ui/components/settings-dialog";
+import { AppAuthProvider } from "@/components/app-auth-provider";
 import { AppHeader } from "@/components/app-header";
 import { AppSidebar } from "@/components/app-sidebar";
-import { FeedbackDialog } from "@/components/feedback-dialog";
-import { RootGuard } from "@/components/root-guard";
 import { AuthDialogWrapper } from "@/components/auth-dialog-wrapper";
-import { AppAuthProvider } from "@/components/app-auth-provider";
+import { FeedbackDialog } from "@/components/feedback-dialog";
 import { PricingSettingsPanel } from "@/components/pricing-settings-panel";
+import { RootGuard } from "@/components/root-guard";
+import { getDexieBootstrap } from "@/functions/get-dexie-bootstrap";
 import { useSubscription } from "@/hooks/use-subscription";
 import { parseSettingsSection } from "@/navigation/search-state";
+import { DataSettings } from "@gitinspect/ui/components/data-settings";
 import { SidebarInset, SidebarProvider } from "@gitinspect/ui/components/sidebar";
-import { TooltipProvider } from "@gitinspect/ui/components/tooltip";
-import { Toaster } from "@gitinspect/ui/components/sonner";
+import { AppSettingsDialog } from "@gitinspect/ui/components/settings-dialog";
 import { ThemeProvider } from "@gitinspect/ui/components/theme-provider";
+import { Toaster } from "@gitinspect/ui/components/sonner";
+import { TooltipProvider } from "@gitinspect/ui/components/tooltip";
 import { AutumnProvider } from "autumn-js/react";
+import appCss from "../styles.css?url";
 
 type RootSearchInput = {
   feedback?: string;
+  feedbackIncludeDiagnostics?: string;
+  feedbackMessage?: string;
+  feedbackSentiment?: string;
   settings?: string;
   sidebar?: string;
 };
 
 type RootSearch = {
   feedback?: "open";
+  feedbackIncludeDiagnostics?: boolean;
+  feedbackMessage?: string;
+  feedbackSentiment?: FeedbackSentiment;
   settings?: ReturnType<typeof parseSettingsSection>;
   sidebar?: "open";
 };
 
 export const Route = createRootRoute({
+  loader: () => getDexieBootstrap(),
+  staleTime: Infinity,
   validateSearch: (search: RootSearchInput): RootSearch => ({
     feedback: search.feedback === "open" ? "open" : undefined,
+    feedbackIncludeDiagnostics: search.feedbackIncludeDiagnostics === "true" ? true : undefined,
+    feedbackMessage:
+      typeof search.feedbackMessage === "string" && search.feedbackMessage.length > 0
+        ? search.feedbackMessage.slice(0, 2_000)
+        : undefined,
+    feedbackSentiment: parseFeedbackSentiment(search.feedbackSentiment),
     settings: parseSettingsSection(search.settings),
     sidebar: search.sidebar === "open" ? "open" : undefined,
   }),
@@ -120,19 +138,7 @@ function RootDocument({ children }: { children: React.ReactNode }) {
           enableSystem
           disableTransitionOnChange
         >
-          <TooltipProvider>
-            <AppAuthProvider>
-              <AutumnProvider
-                backendUrl={env.VITE_BETTER_AUTH_URL}
-                includeCredentials
-                pathPrefix="/api/autumn"
-              >
-                <RootGuard>{children}</RootGuard>
-                <AuthDialogWrapper />
-                <Toaster position="bottom-right" />
-              </AutumnProvider>
-            </AppAuthProvider>
-          </TooltipProvider>
+          <TooltipProvider>{children}</TooltipProvider>
         </ThemeProvider>
         <Scripts />
         <VercelAnalytics />
@@ -143,37 +149,109 @@ function RootDocument({ children }: { children: React.ReactNode }) {
 }
 
 function RootLayout() {
+  const { syncEnabled } = Route.useLoaderData();
+
+  configureDbCloud({
+    // Sync is intentionally disabled for now; keep Dexie local-only until we decide to ship paid sync.
+    databaseUrl: undefined,
+    fetchTokens: async (tokenParams) => {
+      const response = await fetch("/api/auth/dexie-cloud/token", {
+        body: JSON.stringify(tokenParams),
+        credentials: "same-origin",
+        headers: {
+          "content-type": "application/json",
+        },
+        method: "POST",
+      });
+
+      if (!response.ok) {
+        throw new Error("Failed to fetch Dexie Cloud token.");
+      }
+
+      return await response.json();
+    },
+    syncEnabled,
+  });
+
+  React.useEffect(() => {
+    if (!syncEnabled) {
+      return;
+    }
+
+    void syncDb().catch((error) => {
+      console.error("Could not initialize Dexie sync", error);
+    });
+  }, [syncEnabled]);
+
+  return (
+    <AppAuthProvider>
+      <AutumnProvider
+        backendUrl={env.VITE_BETTER_AUTH_URL}
+        includeCredentials
+        pathPrefix="/api/autumn"
+      >
+        <RootAppChrome />
+      </AutumnProvider>
+    </AppAuthProvider>
+  );
+}
+
+function RootAppChrome() {
   const navigate = useNavigate();
   const search = Route.useSearch();
-  const { isSignedIn } = useSubscription();
+  const { isSignedIn, subscriptionState } = useSubscription();
+
   return (
-    <SidebarProvider
-      onOpenChange={(open) => {
-        void navigate({
-          search: (prev) => ({
-            ...prev,
-            sidebar: open ? "open" : undefined,
-          }),
-          to: ".",
-        });
-      }}
-      open={search.sidebar === "open"}
-    >
-      <div className="relative flex h-svh w-full overflow-hidden overscroll-none">
-        <AppSidebar />
-        <SidebarInset className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
-          <AppHeader />
-          <main className="flex min-h-0 flex-1 overflow-hidden">
-            <Outlet />
-          </main>
-        </SidebarInset>
-      </div>
-      <AppSettingsDialog
-        pricingLabel={isSignedIn ? "Subscription" : "Get Pro"}
-        pricingPanel={<PricingSettingsPanel />}
-      />
-      <FeedbackDialog />
-    </SidebarProvider>
+    <RootGuard>
+      <SidebarProvider
+        onOpenChange={(open) => {
+          void navigate({
+            search: (prev) => ({
+              ...prev,
+              sidebar: open ? "open" : undefined,
+            }),
+            to: ".",
+          });
+        }}
+        open={search.sidebar === "open"}
+      >
+        <div className="relative flex h-svh w-full overflow-hidden overscroll-none">
+          <AppSidebar />
+          <SidebarInset className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
+            <AppHeader />
+            <main className="flex min-h-0 flex-1 overflow-hidden">
+              <Outlet />
+            </main>
+          </SidebarInset>
+        </div>
+        <AppSettingsDialog
+          dataPanel={
+            <DataSettings
+              canRequestSync={subscriptionState?.isSubscribed === true}
+              onRequestSync={() => {
+                void navigate({
+                  replace: true,
+                  search: (prev) => ({
+                    ...prev,
+                    feedback: "open",
+                    feedbackIncludeDiagnostics: undefined,
+                    feedbackMessage:
+                      "Implement the fucking sync feature across devices someone is paying for it ! (Press enter for me to receive this message)",
+                    feedbackSentiment: "sad",
+                  }),
+                  to: ".",
+                });
+              }}
+            />
+          }
+          pricingLabel={isSignedIn ? "Subscription" : "Get Pro"}
+          pricingPanel={<PricingSettingsPanel />}
+        />
+        <FeedbackDialog />
+      </SidebarProvider>
+      <AuthDialogWrapper />
+      <Toaster position="bottom-right" />
+    </RootGuard>
   );
 }
 
