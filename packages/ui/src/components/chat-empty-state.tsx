@@ -4,7 +4,7 @@ import { CHAT_SUGGESTIONS } from "@gitinspect/ui/components/chat-suggestions";
 import { repoSourceToPath } from "@gitinspect/pi/repo/url";
 import type { ResolvedRepoSource } from "@gitinspect/db";
 
-function LetsInspectHeading() {
+export function LetsInspectHeading() {
   return (
     <div className="flex flex-row items-center justify-center gap-2.5">
       <h2 className="font-geist-pixel-square text-2xl font-semibold tracking-tight text-foreground">

@@ -1,6 +1,11 @@
 import type { RepoPathIntent } from "@gitinspect/pi/repo/path-intent";
 
-const RESERVED_ROOT_SEGMENTS = new Set(["auth", "chat", "api"]);
+export const RESERVED_ROOT_SEGMENTS = new Set(["auth", "chat", "api"]);
+
+/** True when `segment` is reserved for app routes (e.g. /chat) and must not be treated as a GitHub org/user slug. */
+export function isReservedRootOwnerSegment(segment: string): boolean {
+  return RESERVED_ROOT_SEGMENTS.has(segment.trim().toLowerCase());
+}
 const UNSUPPORTED_REPO_PAGES = new Set([
   "actions",
   "activity",

@@ -8,6 +8,9 @@ const ALLOWLIST = [
   /^\/repos\/[^/]+\/[^/]+$/,
   /^\/repos\/[^/]+\/[^/]+\/languages$/,
   /^\/repos\/[^/]+\/[^/]+\/readme$/,
+  /^\/users\/[^/]+$/,
+  /^\/users\/[^/]+\/repos$/,
+  /^\/orgs\/[^/]+\/repos$/,
 ];
 
 function buildCacheHeaders(): Headers {

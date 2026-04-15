@@ -96,6 +96,46 @@ describe("/api/github/$ route", () => {
     });
   });
 
+  it("proxies org and user list paths used by the org landing page", async () => {
+    const fetchMock = vi.fn(
+      async (_url: string | URL) =>
+        new Response(JSON.stringify([{ name: "demo" }]), {
+          headers: { "Content-Type": "application/json" },
+          status: 200,
+        }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { Route } = await import("@/routes/api/github/$");
+
+    const orgRes = await Route.options.server.handlers.ANY({
+      request: new Request("https://gitinspect.com/api/github/orgs/acme/repos?per_page=10"),
+    });
+    expect(orgRes.status).toBe(200);
+    expect(fetchMock).toHaveBeenCalledWith(
+      new URL("https://api.github.com/orgs/acme/repos?per_page=10"),
+      expect.any(Object),
+    );
+
+    const userReposRes = await Route.options.server.handlers.ANY({
+      request: new Request("https://gitinspect.com/api/github/users/acme/repos"),
+    });
+    expect(userReposRes.status).toBe(200);
+    expect(fetchMock).toHaveBeenCalledWith(
+      new URL("https://api.github.com/users/acme/repos"),
+      expect.any(Object),
+    );
+
+    const userProfileRes = await Route.options.server.handlers.ANY({
+      request: new Request("https://gitinspect.com/api/github/users/acme"),
+    });
+    expect(userProfileRes.status).toBe(200);
+    expect(fetchMock).toHaveBeenCalledWith(
+      new URL("https://api.github.com/users/acme"),
+      expect.any(Object),
+    );
+  });
+
   it("sets cache headers on successful proxy responses", async () => {
     vi.stubGlobal(
       "fetch",

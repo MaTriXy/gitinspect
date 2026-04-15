@@ -53,6 +53,11 @@ function getHeaderRepoSource(
     return currentMatch.loaderData;
   }
 
+  if (currentMatch.routeId === "/$owner/") {
+    const owner = currentMatch.params.owner ?? "";
+    return owner ? { owner, ref: undefined, repo: "" } : undefined;
+  }
+
   if (currentMatch.routeId === "/$owner/$repo/") {
     return {
       owner: currentMatch.params.owner ?? "",
@@ -133,31 +138,40 @@ export function AppHeader({ showGetPro = true }: { showGetPro?: boolean } = {}) 
                 <div className="flex min-w-0 flex-1 items-center justify-start gap-1.5">
                   <SquareOwnerAvatar owner={repoSource.owner} />
                   <BreadcrumbLink
-                    className={cn(repoLinkClass, "max-w-[45%] min-w-0 shrink truncate")}
+                    className={cn(
+                      repoLinkClass,
+                      repoSource.repo
+                        ? "max-w-[45%] min-w-0 shrink truncate"
+                        : "min-w-0 max-w-full shrink truncate",
+                    )}
                     href={`https://github.com/${encodeURIComponent(repoSource.owner)}`}
                     rel="noreferrer"
                     target="_blank"
                   >
                     {repoSource.owner}
                   </BreadcrumbLink>
-                  <span aria-hidden className="shrink-0 text-muted-foreground">
-                    /
-                  </span>
-                  <div className="flex min-w-0 flex-1 items-center gap-1.5">
-                    <BreadcrumbLink
-                      className={cn(repoLinkClass, "min-w-0 shrink truncate text-left")}
-                      href={`https://github.com/${encodeURIComponent(repoSource.owner)}/${encodeURIComponent(repoSource.repo)}`}
-                      rel="noreferrer"
-                      target="_blank"
-                    >
-                      {repoSource.repo}
-                    </BreadcrumbLink>
-                    {repoSource.ref ? (
-                      <span className="shrink-0 truncate font-geist-pixel-square text-sm font-normal tracking-tight text-muted-foreground sm:text-base">
-                        [{repoSource.ref}]
+                  {repoSource.repo ? (
+                    <>
+                      <span aria-hidden className="shrink-0 text-muted-foreground">
+                        /
                       </span>
-                    ) : null}
-                  </div>
+                      <div className="flex min-w-0 flex-1 items-center gap-1.5">
+                        <BreadcrumbLink
+                          className={cn(repoLinkClass, "min-w-0 shrink truncate text-left")}
+                          href={`https://github.com/${encodeURIComponent(repoSource.owner)}/${encodeURIComponent(repoSource.repo)}`}
+                          rel="noreferrer"
+                          target="_blank"
+                        >
+                          {repoSource.repo}
+                        </BreadcrumbLink>
+                        {repoSource.ref ? (
+                          <span className="shrink-0 truncate font-geist-pixel-square text-sm font-normal tracking-tight text-muted-foreground sm:text-base">
+                            [{repoSource.ref}]
+                          </span>
+                        ) : null}
+                      </div>
+                    </>
+                  ) : null}
                 </div>
               </BreadcrumbItem>
             ) : (
